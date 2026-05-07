@@ -19,7 +19,7 @@ export function HomePage() {
             estructura pensada para crecer sin rehacer la organización.
           </p>
           <div className="mt-8 flex flex-col gap-3 sm:flex-row">
-            <Button>Crear primera funcionalidad</Button>
+            <Button>JAN TARRINO GAY</Button>
             <Button variant="secondary">Ver estructura</Button>
           </div>
         </div>
@@ -47,3 +47,5 @@ export function HomePage() {
     </Container>
   )
 }
+
+
