@@ -1,50 +1,48 @@
-import { Button } from '@/components/ui/Button'
-import { Container } from '@/components/ui/Container'
-import { starterFeatures } from '@/data/starterFeatures'
+import { useState } from 'react'
+import type { FormEvent } from 'react'
+
 import { useDocumentTitle } from '@/hooks/useDocumentTitle'
-import { siteConfig } from '@/lib/site'
 
 export function HomePage() {
-  useDocumentTitle(`${siteConfig.name} | Base del hackathon`)
+  const [truckCode, setTruckCode] = useState('')
+
+  useDocumentTitle('Buscador de camions')
+
+  const handleSubmit = (event: FormEvent<HTMLFormElement>) => {
+    event.preventDefault()
+    // TODO: connectar la cerca i navegar a la fitxa del camió.
+  }
 
   return (
-    <Container className="py-16 sm:py-20">
-      <section className="grid gap-12 lg:grid-cols-[1.1fr_0.9fr] lg:items-center" id="features">
-        <div className="max-w-2xl">
-          <h1 className="text-4xl font-bold leading-tight text-ink sm:text-5xl">
-            Base lista para construir rápido cuando empiece el reto.
-          </h1>
-          <p className="mt-5 text-lg leading-8 text-muted">
-            Proyecto inicial con Vite, React, TypeScript, Tailwind CSS y una
-            estructura pensada para crecer sin rehacer la organización.
-          </p>
-          <div className="mt-8 flex flex-col gap-3 sm:flex-row">
-            <Button>OCTAVIO Y MI GLOVO</Button>
-            <Button variant="secondary">PIQUE VOLEM LA SISENA</Button>
+    <main className="flex min-h-[calc(100vh-5rem)] items-center justify-center px-4 py-12">
+      <section className="w-full max-w-xl rounded-3xl border border-slate-200 bg-white/95 p-8 shadow-lg shadow-slate-200/70 backdrop-blur sm:p-10">
+        <form className="space-y-4" onSubmit={handleSubmit}>
+          <label className="block text-sm font-medium text-slate-600" htmlFor="truck-code">
+            Introdueix el codi del camió
+          </label>
+
+          <div className="flex flex-col gap-3 sm:flex-row">
+            <input
+              autoComplete="off"
+              className="h-12 w-full rounded-xl border border-slate-300 bg-white px-4 text-base text-slate-900 outline-none transition focus:border-slate-400 focus:ring-2 focus:ring-slate-200"
+              id="truck-code"
+              onChange={(event) => setTruckCode(event.target.value)}
+              placeholder="Introdueix el codi"
+              required
+              type="text"
+              value={truckCode}
+            />
+
+            <button
+              className="h-12 rounded-xl bg-slate-900 px-6 text-sm font-semibold text-white transition hover:bg-slate-800 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-slate-300"
+              type="submit"
+            >
+              Buscar
+            </button>
           </div>
-        </div>
-
-        <div className="rounded-2xl border border-slate-200 bg-white p-6 shadow-sm" id="stack">
-          <p className="text-sm font-semibold text-brand-600">Stack inicial</p>
-          <ul className="mt-5 space-y-4">
-            {starterFeatures.map((feature) => (
-              <li className="rounded-xl bg-slate-50 p-4" key={feature.title}>
-                <h2 className="font-semibold text-ink">{feature.title}</h2>
-                <p className="mt-1 text-sm leading-6 text-muted">{feature.description}</p>
-              </li>
-            ))}
-          </ul>
-        </div>
+        </form>
       </section>
-
-      <section className="mt-16 rounded-2xl border border-slate-200 bg-white p-6 shadow-sm" id="roadmap">
-        <h2 className="text-xl font-semibold text-ink">Siguientes pasos</h2>
-        <p className="mt-3 max-w-3xl leading-7 text-muted">
-          Cuando se conozca el reto, esta base ya permite añadir rutas, integrar APIs,
-          crear componentes concretos y desplegar en Vercel sin rehacer el setup.
-        </p>
-      </section>
-    </Container>
+    </main>
   )
 }
 
