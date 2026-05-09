@@ -1,16 +1,20 @@
 import { useState } from 'react'
 import type { FormEvent } from 'react'
+import { useNavigate } from 'react-router-dom'
 
 import { useDocumentTitle } from '@/hooks/useDocumentTitle'
 
 export function HomePage() {
   const [truckCode, setTruckCode] = useState('')
+  const navigate = useNavigate()
 
   useDocumentTitle('Buscador de camions')
 
   const handleSubmit = (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault()
-    // TODO: connectar la cerca i navegar a la fitxa del camió.
+    const normalizedCode = truckCode.trim().toUpperCase()
+    if (!normalizedCode) return
+    navigate(`/camio/${normalizedCode}`)
   }
 
   return (
@@ -26,7 +30,7 @@ export function HomePage() {
               autoComplete="off"
               className="h-12 w-full rounded-xl border border-slate-300 bg-white px-4 text-base text-slate-900 outline-none transition focus:border-slate-400 focus:ring-2 focus:ring-slate-200"
               id="truck-code"
-              onChange={(event) => setTruckCode(event.target.value)}
+              onChange={(event) => setTruckCode(event.target.value.toUpperCase())}
               placeholder="Introdueix el codi"
               required
               type="text"

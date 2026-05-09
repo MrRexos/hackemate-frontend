@@ -1,8 +1,10 @@
-export enum TipusCamio {
-  Petit = "PETIT",
-  Mitja = "MITJA",
-  Gran = "GRAN",
-}
+export const TipusCamio = {
+  Petit: 'PETIT',
+  Mitja: 'MITJA',
+  Gran: 'GRAN',
+} as const;
+
+export type TipusCamio = (typeof TipusCamio)[keyof typeof TipusCamio];
 
 export class Camio {
   public readonly codi: string;
@@ -27,5 +29,9 @@ export class Camio {
   desassignarRuta(): void {
     this.ruta = null;
     this.teRutaDisponible = true;
+  }
+
+  setDisponibilitat(disponible: boolean): void {
+    this.teRutaDisponible = disponible;
   }
 }
