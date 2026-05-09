@@ -1,4 +1,5 @@
-import { Camio, TipusCamio } from '../models/Camio';
+import { Camio, TipusCamio } from '../models/Camio'
+import { assignarRutesACamions, crearRutesSimulades } from '../services/assignacioRutes'
 
 export const camions: Camio[] = [
   new Camio('A1B2C3D', TipusCamio.Mitja),
@@ -19,7 +20,10 @@ export const camions: Camio[] = [
   new Camio('G2L6R9T', TipusCamio.Gran),
 
   new Camio('Z3C7V1B', TipusCamio.Petit),
-];
+]
+
+/** Simula entrada de rutes i assignació al carregar la flota (ordre igual que l’entrada API). */
+assignarRutesACamions(camions, crearRutesSimulades())
 
 export function getCamions(): Camio[] {
   return camions;

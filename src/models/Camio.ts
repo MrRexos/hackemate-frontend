@@ -1,3 +1,5 @@
+import type { Ruta } from './Ruta'
+
 export const TipusCamio = {
   Petit: 'PETIT',
   Mitja: 'MITJA',
@@ -11,8 +13,7 @@ export class Camio {
   public readonly tipus: TipusCamio;
   public teRutaDisponible: boolean;
 
-  // TODO: canviar 'unknown' per la classe Ruta quan estigui disponible.
-  public ruta: unknown | null;
+  public ruta: Ruta | null;
 
   constructor(codi: string, tipus: TipusCamio) {
     this.codi = codi;
@@ -21,7 +22,7 @@ export class Camio {
     this.ruta = null;
   }
 
-  assignarRuta(ruta: unknown): void {
+  assignarRuta(ruta: Ruta): void {
     this.ruta = ruta;
     this.teRutaDisponible = false;
   }
