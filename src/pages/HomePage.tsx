@@ -18,36 +18,35 @@ export function HomePage() {
   }
 
   return (
-    <main className="flex min-h-[calc(100vh-5rem)] items-center justify-center px-4 py-12">
-      <section className="w-full max-w-xl rounded-3xl border border-slate-200 bg-white/95 p-8 shadow-lg shadow-slate-200/70 backdrop-blur sm:p-10">
-        <form className="space-y-4" onSubmit={handleSubmit}>
-          <label className="block text-sm font-medium text-slate-600" htmlFor="truck-code">
-            Introdueix el codi del camió
+    <div className="flex min-h-0 w-full flex-1 flex-col items-center justify-center overscroll-none px-4 py-0">
+      <div className="w-full max-w-[17.5rem] text-center sm:max-w-xs">
+        <h1 className="text-2xl font-semibold leading-tight text-slate-900 sm:text-[1.75rem]">
+           CODI DEL CAMIÓ
+        </h1>
+
+        <form className="mt-12 space-y-6" onSubmit={handleSubmit}>
+          <label className="sr-only" htmlFor="truck-code">
+            CODI DEL CAMIÓ
           </label>
+          <input
+            autoComplete="off"
+            className="w-full border-0 border-b border-slate-300 bg-transparent py-3 text-center text-2xl font-semibold  tracking-[0.28em] text-slate-900 placeholder:tracking-normal placeholder:text-slate-400 focus:border-slate-700 focus:outline-none focus:ring-0"
+            id="truck-code"
+            onChange={(event) => setTruckCode(event.target.value.toUpperCase())}
+            placeholder="Introdueix el codi aquí"
+            required
+            type="text"
+            value={truckCode}
+          />
 
-          <div className="flex flex-col gap-3 sm:flex-row">
-            <input
-              autoComplete="off"
-              className="h-12 w-full rounded-xl border border-slate-300 bg-white px-4 text-base text-slate-900 outline-none transition focus:border-slate-400 focus:ring-2 focus:ring-slate-200"
-              id="truck-code"
-              onChange={(event) => setTruckCode(event.target.value.toUpperCase())}
-              placeholder="Introdueix el codi"
-              required
-              type="text"
-              value={truckCode}
-            />
-
-            <button
-              className="h-12 rounded-xl bg-slate-900 px-6 text-sm font-semibold text-white transition hover:bg-slate-800 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-slate-300"
-              type="submit"
-            >
-              Buscar
-            </button>
-          </div>
+          <button
+            className="w-full rounded-md border border-slate-200 py-2.5 text-sm font-medium text-slate-800 transition hover:border-slate-400 hover:bg-slate-100/70 active:bg-slate-100"
+            type="submit"
+          >
+            Obrir fitxa
+          </button>
         </form>
-      </section>
-    </main>
+      </div>
+    </div>
   )
 }
-
-

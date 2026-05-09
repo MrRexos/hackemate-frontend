@@ -4,6 +4,7 @@ import { ConductorRouteMap } from '@/components/truck/ConductorRouteMap'
 import { RouteStopsTimeline } from '@/components/truck/RouteStopsTimeline'
 import type { Camio } from '@/models/Camio'
 import type { DeliveryArrivalPayload } from '@/utils/driveSimulation'
+import { esParadaMagatzem } from '@/utils/paradaMap'
 import { timelineScrollLeadIndex } from '@/utils/routePathDrive'
 
 type Props = {
@@ -54,6 +55,20 @@ export function TruckConductorPanel({ camio }: Props) {
       driveMeta.totalMeters,
     )
   }, [camio.ruta, driveMeta, distanceAlong])
+
+  const entreguesPendents = useMemo(() => {
+    if (!camio.ruta) return 0
+    const n = camio.ruta.parades.length
+    let totalEntregues = 0
+    for (let i = 0; i < n; i++) {
+      if (!esParadaMagatzem(i, n)) totalEntregues++
+    }
+    let fetes = 0
+    for (const idx of completedDeliveryIndices) {
+      if (!esParadaMagatzem(idx, n)) fetes++
+    }
+    return Math.max(0, totalEntregues - fetes)
+  }, [camio.ruta, completedDeliveryIndices])
 
   const clearProgrammaticTimer = useCallback(() => {
     if (programmaticScrollTimerRef.current != null) {
@@ -273,7 +288,8 @@ export function TruckConductorPanel({ camio }: Props) {
             <h3 className="text-xs font-bold uppercase tracking-wide text-slate-800">Punts d&apos;entrega</h3>
             {camio.ruta ? (
               <p className="mt-1 text-sm text-slate-600">
-                <span className="tabular-nums font-medium text-slate-800">{camio.ruta.parades.length}</span> parades
+                <span className="tabular-nums font-medium text-slate-800">{entreguesPendents}</span>{' '}
+                {entreguesPendents === 1 ? 'entrega pendent' : 'entregues pendents'}
               </p>
             ) : null}
           </div>
