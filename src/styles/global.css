@@ -1,7 +1,7 @@
 @import 'tailwindcss';
 
 @theme {
-  --font-sans: Inter, ui-sans-serif, system-ui, sans-serif;
+  --font-sans: 'Inter', ui-sans-serif, system-ui, sans-serif;
   
   /* Red/Cream Palette - Minimalist */
   --color-cream-50: #FFFBF7;
@@ -21,6 +21,8 @@
 :root {
   color: #1A1A1A;
   background: #FFFBF7;
+  font-family: 'Inter', ui-sans-serif, system-ui, sans-serif;
+  font-weight: 500;
   font-synthesis: none;
   text-rendering: optimizeLegibility;
   -webkit-font-smoothing: antialiased;
@@ -40,6 +42,20 @@ a {
 
 .leaflet-container {
   font-family: Inter, ui-sans-serif, system-ui, sans-serif;
+}
+
+.route-map-tiles {
+  filter: grayscale(1) saturate(0) contrast(0.82) brightness(1.08);
+}
+
+.leaflet-control-zoom a {
+  border-color: #E8DDD0;
+  color: #6B6B6B;
+}
+
+.leaflet-control-zoom a:hover {
+  background: #FDF6EE;
+  color: #1A1A1A;
 }
 
 .leaflet-tooltip {

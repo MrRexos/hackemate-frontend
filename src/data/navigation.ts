@@ -1,8 +1,7 @@
 import type { NavigationItem } from '@/types/navigation'
 
 export const navigationItems = [
-  { href: '#piloto', label: 'Piloto' },
-  { href: '#mapa', label: 'Mapa' },
-  { href: '#carga', label: 'Carga' },
-  { href: '#score', label: 'Score' },
+  { href: '#pedidos', label: 'Pedidos' },
+  { href: '#organizacion', label: 'Organizacion' },
+  { href: '#ruta', label: 'Ruta' },
 ] satisfies readonly NavigationItem[]

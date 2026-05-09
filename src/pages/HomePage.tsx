@@ -1,9 +1,11 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import * as L from 'leaflet'
+import { TruckLoadPlanner } from '@/components/TruckLoadPlanner'
 import { Container } from '@/components/ui/Container'
 import { pilotRoute } from '@/data/pilotRoute'
 import { useDocumentTitle } from '@/hooks/useDocumentTitle'
 import { siteConfig } from '@/lib/site'
+import { buildTruckLoadPlan, type MasterLoadRow } from '@/utils/loadPlanner'
 
 type Client = {
   clientId: string
@@ -49,16 +51,6 @@ type Depot = {
 type PolylinePoint = {
   lat: number
   lng: number
-}
-
-type TruckZone = {
-  zone: number
-  label: string
-  position: string
-  clients: readonly string[]
-  pallets: number
-  weightKg: number
-  returnableStops: number
 }
 
 const numberFormatter = new Intl.NumberFormat('es-ES')
@@ -108,7 +100,7 @@ export function HomePage() {
   useDocumentTitle(`${siteConfig.name} | Ruta piloto`)
 
   const clients = pilotRoute.clients as readonly Client[]
-  const truckZones = pilotRoute.truckZones as readonly TruckZone[]
+  const masterRows = pilotRoute.masterRows as readonly MasterLoadRow[]
   const [selectedClientId, setSelectedClientId] = useState(clients[0]?.clientId ?? '')
   const [showOriginalRoute, setShowOriginalRoute] = useState(true)
   const selectedClient = clients.find((client) => client.clientId === selectedClientId) ?? clients[0]
@@ -117,9 +109,11 @@ export function HomePage() {
     setSelectedClientId(clientId)
   }, [])
 
+  const loadPlan = useMemo(() => buildTruckLoadPlan(clients, masterRows), [clients, masterRows])
+
   const topProducts = useMemo(() => {
     const totals = new Map<string, { material: string; product: string; quantity: number; unit: string }>()
-    for (const row of pilotRoute.masterRows) {
+    for (const row of masterRows) {
       const current = totals.get(row.material) ?? {
         material: row.material,
         product: row.product,
@@ -130,15 +124,15 @@ export function HomePage() {
       totals.set(row.material, current)
     }
     return [...totals.values()].sort((a, b) => b.quantity - a.quantity).slice(0, 6)
-  }, [])
+  }, [masterRows])
 
   const metricSources = useMemo(() => {
     const totals = new Map<string, number>()
-    for (const row of pilotRoute.masterRows) {
+    for (const row of masterRows) {
       totals.set(row.metricSource, (totals.get(row.metricSource) ?? 0) + 1)
     }
     return [...totals.entries()].sort((a, b) => b[1] - a[1])
-  }, [])
+  }, [masterRows])
 
   const statusCounts = useMemo(() => {
     return clients.reduce(
@@ -152,14 +146,8 @@ export function HomePage() {
 
   return (
     <Container className="py-12 sm:py-16">
-      <div
-        className="p-4 sm:p-0"
-        style={{
-          fontFamily:
-            'Inter, ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial, "Apple Color Emoji", "Segoe UI Emoji"',
-        }}
-      >
-      <section className="grid gap-8 xl:grid-cols-[0.92fr_1.08fr]" id="piloto">
+      <div className="p-4 sm:p-0">
+      <section className="grid gap-8 xl:grid-cols-[0.92fr_1.08fr]" id="ruta">
         <div className="space-y-6">
           <div>
             <p className="text-xs font-medium uppercase tracking-[0.2em] text-red-600">
@@ -203,7 +191,7 @@ export function HomePage() {
           </div>
         </div>
 
-        <section className="overflow-hidden rounded-lg border border-cream-300 bg-cream-50" id="mapa">
+        <section className="overflow-hidden rounded-lg border border-cream-300 bg-cream-50">
           <div className="flex flex-wrap items-center justify-between gap-3 border-b border-cream-300 px-5 py-4">
             <div>
               <h2 className="text-base font-medium text-ink">Mapa de reparto</h2>
@@ -231,7 +219,7 @@ export function HomePage() {
         </section>
       </section>
 
-      <section className="mt-8 grid gap-8 xl:grid-cols-[1fr_0.72fr]">
+      <section className="mt-8 grid gap-8 xl:grid-cols-[1fr_0.72fr]" id="pedidos">
         <div className="rounded-lg border border-cream-300 bg-cream-50">
           <div className="flex flex-wrap items-center justify-between gap-3 border-b border-cream-300 px-5 py-4">
             <div>
@@ -351,37 +339,9 @@ export function HomePage() {
         </aside>
       </section>
 
-      <section className="mt-8 grid gap-8 lg:grid-cols-[0.95fr_1.05fr]" id="carga">
+      <section className="mt-8 grid gap-8 lg:grid-cols-[1.15fr_0.85fr]" id="organizacion">
         <div className="rounded-lg border border-cream-300 bg-cream-50 p-5">
-          <h2 className="text-base font-medium text-ink">Camión visual</h2>
-          <p className="mt-1 text-sm text-muted">
-            {decimalFormatter.format(pilotRoute.pilot.pallets)} palets equivalentes,{' '}
-            {formatM3(pilotRoute.pilot.volumeM3)} y retorno en{' '}
-            {formatPercent(pilotRoute.pilot.returnableShare * 100)} de las líneas.
-          </p>
-          <div className="mt-5 grid grid-cols-2 gap-3 sm:grid-cols-4">
-            {truckZones.map((zone) => (
-              <div className="min-h-36 rounded-md border border-cream-300 bg-cream-100/50 p-3" key={zone.zone}>
-                <div className="flex items-center justify-between gap-2">
-                  <span className="text-sm font-medium text-ink">{zone.label}</span>
-                  <span className="rounded-md border border-cream-300 bg-cream-50 px-2 py-0.5 text-xs text-muted">
-                    {decimalFormatter.format(zone.pallets)} pal
-                  </span>
-                </div>
-                <p className="mt-2 text-xs font-medium text-muted">{zone.position}</p>
-                <div className="mt-3 space-y-1">
-                  {zone.clients.map((name) => (
-                    <p className="truncate text-xs text-ink" key={name} title={name}>
-                      {name}
-                    </p>
-                  ))}
-                  {zone.clients.length === 0 ? (
-                    <p className="text-xs text-muted">Libre</p>
-                  ) : null}
-                </div>
-              </div>
-            ))}
-          </div>
+          <TruckLoadPlanner onSelectClient={handleSelectClient} plan={loadPlan} />
         </div>
 
         <div className="rounded-lg border border-cream-300 bg-cream-50 p-5">
@@ -422,17 +382,6 @@ export function HomePage() {
             </div>
           </div>
         </div>
-      </section>
-
-      <section className="mt-8 rounded-lg border border-cream-300 bg-cream-50 p-5">
-        <h2 className="text-base font-medium text-ink">Algoritmo aplicado</h2>
-        <ol className="mt-4 grid gap-3 text-sm leading-6 text-muted md:grid-cols-2">
-          {pilotRoute.algorithm.map((step) => (
-            <li className="rounded-md border border-cream-200 bg-cream-100/50 px-4 py-2.5" key={step}>
-              {step}
-            </li>
-          ))}
-        </ol>
       </section>
       </div>
     </Container>
@@ -579,9 +528,10 @@ function RouteMap({
     }).setView([depot.lat, depot.lng], 13)
 
     L.control.zoom({ position: 'bottomright' }).addTo(map)
-    L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
-      attribution: '&copy; OpenStreetMap contributors',
-      maxZoom: 19,
+    L.tileLayer('https://{s}.basemaps.cartocdn.com/light_all/{z}/{x}/{y}{r}.png', {
+      attribution: '&copy; OpenStreetMap contributors &copy; CARTO',
+      className: 'route-map-tiles',
+      maxZoom: 20,
     }).addTo(map)
 
     mapRef.current = map

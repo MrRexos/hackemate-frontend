@@ -1,4 +1,3 @@
-import { Button } from '@/components/ui/Button'
 import { Container } from '@/components/ui/Container'
 import { navigationItems } from '@/data/navigation'
 import { siteConfig } from '@/lib/site'
@@ -18,8 +17,6 @@ export function SiteHeader() {
             </a>
           ))}
         </nav>
-
-        <Button className="hidden sm:inline-flex">Ruta piloto</Button>
       </Container>
     </header>
   )
