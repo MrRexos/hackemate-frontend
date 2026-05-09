@@ -97,7 +97,6 @@ export type TruckLoadPlan = {
   }
 }
 
-const TRUCK_SLOTS = 8
 const PALLET_SHARE_LIMIT = 0.98
 const PALLET_WEIGHT_LIMIT_KG = 900
 const PALLET_VOLUME_LIMIT_M3 = 1.25
@@ -166,7 +165,9 @@ export function materialRuleFor(productType: string): MaterialRule {
 export function buildTruckLoadPlan(
   clients: readonly ClientLoadInput[],
   rows: readonly MasterLoadRow[],
+  options: { slots?: number } = {},
 ): TruckLoadPlan {
+  const truckSlots = options.slots ?? 8
   const orderedClients = [...clients].sort((a, b) => a.optimizedSequence - b.optimizedSequence)
   const rowsByClient = groupRowsByClient(rows)
   const palletDrafts: PalletDraft[] = []
@@ -203,7 +204,7 @@ export function buildTruckLoadPlan(
         })
 
         if (portionShare <= 0.0001) {
-          if (palletDrafts.length >= TRUCK_SLOTS - 1) {
+          if (palletDrafts.length >= truckSlots - 1) {
             overflow = true
             current.warnings.push('Capacidad ajustada al límite del camión')
             current = forceAddPiece(current, piece, remainingShare, remainingWeight, remainingVolume, remainingQuantity, splitIndex)
@@ -234,12 +235,12 @@ export function buildTruckLoadPlan(
     palletDrafts.push(current)
   }
 
-  if (palletDrafts.length > TRUCK_SLOTS) {
+  if (palletDrafts.length > truckSlots) {
     overflow = true
   }
 
-  const occupiedDrafts = palletDrafts.slice(0, TRUCK_SLOTS)
-  const pallets = buildTruckSlots(occupiedDrafts)
+  const occupiedDrafts = palletDrafts.slice(0, truckSlots)
+  const pallets = buildTruckSlots(occupiedDrafts, truckSlots)
   const materialLegend = [...new Set(pallets.flatMap((pallet) => pallet.pieces.map((piece) => piece.productType)))]
     .map(materialRuleFor)
     .sort((a, b) => a.stackRank - b.stackRank)
@@ -259,17 +260,17 @@ export function buildTruckLoadPlan(
     materialLegend,
     summary: {
       occupiedPallets: pallets.filter((pallet) => !pallet.isEmpty).length,
-      totalSlots: TRUCK_SLOTS,
+      totalSlots: truckSlots,
       usedPallets: roundTwo(usedPallets),
       weightKg: roundOne(weightKg),
       volumeM3: roundTwo(volumeM3),
-      utilization: roundOne((usedPallets / TRUCK_SLOTS) * 100),
+      utilization: roundOne((usedPallets / truckSlots) * 100),
       leftWeightKg: roundOne(leftWeightKg),
       rightWeightKg: roundOne(rightWeightKg),
       overflow,
     },
     constraints: {
-      slots: TRUCK_SLOTS,
+      slots: truckSlots,
       palletWeightKg: PALLET_WEIGHT_LIMIT_KG,
       palletVolumeM3: PALLET_VOLUME_LIMIT_M3,
       palletShare: PALLET_SHARE_LIMIT,
@@ -439,9 +440,9 @@ function forceAddPiece(
   return current
 }
 
-function buildTruckSlots(occupiedDrafts: readonly PalletDraft[]) {
+function buildTruckSlots(occupiedDrafts: readonly PalletDraft[], truckSlots: number) {
   const pallets: TruckPallet[] = []
-  for (let index = 0; index < TRUCK_SLOTS; index += 1) {
+  for (let index = 0; index < truckSlots; index += 1) {
     const draft = occupiedDrafts[index] ?? createPalletDraft()
     const row = Math.floor(index / 2)
     const lane = index % 2 === 0 ? 'left' : 'right'
@@ -456,7 +457,7 @@ function buildTruckSlots(occupiedDrafts: readonly PalletDraft[]) {
       slotNumber: index + 1,
       row,
       lane,
-      positionLabel: positionLabel(row),
+      positionLabel: positionLabel(row, truckSlots),
       accessLabel: stopRange ? stopRangeLabel(stopRange) : 'Reserva',
       clients,
       pieces: draft.pieces,
@@ -486,11 +487,12 @@ function uniqueClients(pieces: readonly LoadPiece[]): PalletClient[] {
   return [...byClient.values()].sort((a, b) => a.stop - b.stop)
 }
 
-function positionLabel(row: number) {
+function positionLabel(row: number, truckSlots: number) {
+  const lastRow = Math.ceil(truckSlots / 2) - 1
   if (row === 0) {
     return 'Puerta trasera'
   }
-  if (row === 3) {
+  if (row === lastRow) {
     return 'Frontal'
   }
   return 'Centro'

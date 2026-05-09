@@ -1,4 +1,6 @@
+export type AppView = 'pedidos' | 'organizacion' | 'ruta'
+
 export type NavigationItem = {
-  href: string
+  view: AppView
   label: string
 }

@@ -1,10 +1,16 @@
 import type { PropsWithChildren } from 'react'
 import { SiteHeader } from '@/components/layout/SiteHeader'
+import type { AppView } from '@/types/navigation'
 
-export function AppLayout({ children }: PropsWithChildren) {
+type AppLayoutProps = PropsWithChildren<{
+  activeView: AppView
+  onNavigate: (view: AppView) => void
+}>
+
+export function AppLayout({ activeView, children, onNavigate }: AppLayoutProps) {
   return (
     <div className="min-h-screen bg-cream-50 text-ink">
-      <SiteHeader />
+      <SiteHeader activeView={activeView} onNavigate={onNavigate} />
       <main>{children}</main>
     </div>
   )
