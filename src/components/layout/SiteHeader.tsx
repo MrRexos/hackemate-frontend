@@ -19,7 +19,7 @@ export function SiteHeader() {
           ))}
         </nav>
 
-        <Button className="hidden sm:inline-flex">Empezar</Button>
+        <Button className="hidden sm:inline-flex">Ruta piloto</Button>
       </Container>
     </header>
   )

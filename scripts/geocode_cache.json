@@ -1,0 +1,77 @@
+{
+  "CAMINO CAN VILA S/N|08100|MOLLET DEL VALLES": {
+    "lat": 41.539503,
+    "lng": 2.214178,
+    "source": "centroide local"
+  },
+  "Carrer de Conestable de Portugal 8|08150|PARETS DEL VALLES": {
+    "lat": 41.573633,
+    "lng": 2.234153,
+    "source": "centroide local"
+  },
+  "Avinguda de Catalunya 133|08150|PARETS DEL VALLES": {
+    "lat": 41.556835,
+    "lng": 2.226768,
+    "source": "Nominatim"
+  },
+  "Carrer de Mary Santpere 1|08150|PARETS DEL VALLES": {
+    "lat": 41.565083,
+    "lng": 2.22723,
+    "source": "Nominatim"
+  },
+  "Avinguda de Catalunya 102|08150|PARETS DEL VALLES": {
+    "lat": 41.556835,
+    "lng": 2.226768,
+    "source": "Nominatim"
+  },
+  "AVENIDA PEDRA DEL DIABLE 28|08150|PARETS DEL VALLES": {
+    "lat": 41.573595,
+    "lng": 2.23318,
+    "source": "centroide local"
+  },
+  "AVENIDA CATALUNYA 24|08150|PARETS DEL VALLÈS": {
+    "lat": 41.572898,
+    "lng": 2.233152,
+    "source": "centroide local"
+  },
+  "AVENIDA PEDRA DEL DIABLE 6|08150|PARETS DEL VALLES": {
+    "lat": 41.572299,
+    "lng": 2.233987,
+    "source": "centroide local"
+  },
+  "Avinguda de Catalunya 111|08150|PARETS DEL VALLES": {
+    "lat": 41.565323,
+    "lng": 2.229146,
+    "source": "Nominatim"
+  },
+  "LA SALUT 37 A|08150|PARETS DEL VALLES": {
+    "lat": 41.560674,
+    "lng": 2.219275,
+    "source": "Nominatim"
+  },
+  "CALLE INDEPENDENCIA 51|08150|PARETS DEL VALLES": {
+    "lat": 41.574124,
+    "lng": 2.232232,
+    "source": "centroide local"
+  },
+  "CALLE BUTJOSA 58|08150|PARETS DEL VALLES": {
+    "lat": 41.573057,
+    "lng": 2.232971,
+    "source": "centroide local"
+  },
+  "PAU CASALS 33|08150|PARETS DEL VALLES": {
+    "lat": 41.565858,
+    "lng": 2.225023,
+    "source": "Nominatim"
+  },
+  "Avinguda de Catalunya 92|08150|PARETS DEL VALLES": {
+    "lat": 41.561669,
+    "lng": 2.228238,
+    "source": "Nominatim"
+  },
+  "CATALUNYA 102|08150|PARETS DEL VALLES": {
+    "lat": 41.565323,
+    "lng": 2.229146,
+    "source": "Nominatim"
+  }
+}
