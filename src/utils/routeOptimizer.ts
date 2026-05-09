@@ -115,6 +115,8 @@ type DraftTruck = {
 type OptimizerContext = {
   depot: Depot
   clientsById: Map<string, PlanningClient>
+  routeCache: Map<string, RouteMetrics>
+  distanceCache: Map<string, number>
 }
 
 type LoadProjection = {
@@ -122,6 +124,18 @@ type LoadProjection = {
   weightKg: number
   volumeM3: number
   lines: number
+}
+
+type DraftSetCandidate = {
+  delta: number
+  drafts: DraftTruck[]
+}
+
+type OptimizationBudget = {
+  passes: number
+  allowSwaps: boolean
+  maxCloseRouteSize: number
+  maxRelocationCandidatesPerTruck: number
 }
 
 const START_MINUTE = 8 * 60
@@ -135,6 +149,8 @@ const LOAD_ACCESS_FACTOR = 1.6
 const PALLET_WEIGHT_LIMIT_KG = 900
 const PALLET_VOLUME_LIMIT_M3 = 1.25
 const TRUCK_FILL_LIMIT = 0.98
+const MIN_SCORE_IMPROVEMENT = 0.15
+const GLOBAL_IMPROVEMENT_PASSES = 3
 
 export function getDefaultAvailability(truckTypes: readonly TruckType[]): TruckAvailability {
   return Object.fromEntries(
@@ -150,7 +166,12 @@ export function buildDistributionPlan(
 ): DistributionPlan {
   const trucks = expandAvailableTrucks(truckTypes, availability)
   const clientsById = new Map(day.clients.map((client) => [client.clientId, client]))
-  const context: OptimizerContext = { depot, clientsById }
+  const context: OptimizerContext = {
+    depot,
+    clientsById,
+    routeCache: new Map(),
+    distanceCache: new Map(),
+  }
   const rowsByClient = groupRowsByClient(day.masterRows)
   const warnings: string[] = []
 
@@ -159,27 +180,7 @@ export function buildDistributionPlan(
     warnings.push('La capacidad indicada no cubre todos los palets con el margen operativo recomendado.')
   }
 
-  const drafts = trucks.map(createDraftTruck)
-  const orderedClients = [...day.clients].sort(orderClientsForAssignment)
-
-  for (const client of orderedClients) {
-    const best = chooseBestTruckInsertion(drafts, client, context)
-    const draft = drafts[best.truckIndex]
-    draft.routeIds = best.routeIds
-    draft.currentScore = best.routeScore
-    draft.pallets = roundTwo(draft.pallets + client.pallets)
-    draft.weightKg = roundOne(draft.weightKg + client.weightKg)
-    draft.volumeM3 = roundTwo(draft.volumeM3 + client.volumeM3)
-    draft.lines += client.lines
-  }
-
-  for (const draft of drafts) {
-    if (draft.routeIds.length === 0) {
-      continue
-    }
-    draft.routeIds = improveRoute(draft.routeIds, context)
-    draft.currentScore = evaluateRoute(draft.routeIds, context).operationalScore
-  }
+  const drafts = buildBestDraftPlan(trucks, day.clients, context)
 
   const plannedTrucks = drafts.map((draft) => finalizeTruck(draft, context, rowsByClient))
   const assignedTrucks = plannedTrucks.filter((truck) => truck.clients.length > 0)
@@ -250,6 +251,117 @@ function createDraftTruck(truck: {
   }
 }
 
+function buildBestDraftPlan(
+  trucks: readonly {
+    id: string
+    label: string
+    type: TruckType
+    capacityPallets: number
+  }[],
+  clients: readonly PlanningClient[],
+  context: OptimizerContext,
+) {
+  // Multi-start construction avoids locking the plan into one greedy ordering.
+  if (clients.length === 0) {
+    return trucks.map(createDraftTruck)
+  }
+
+  let bestDrafts: DraftTruck[] | null = null
+  let bestScore = Number.POSITIVE_INFINITY
+
+  for (const order of buildAssignmentOrders(clients, context.depot)) {
+    const initialDrafts = assignClientsGreedily(trucks, order.clients, context)
+    const score = totalDraftScore(initialDrafts)
+
+    if (score < bestScore) {
+      bestDrafts = initialDrafts
+      bestScore = score
+    }
+  }
+
+  if (!bestDrafts) {
+    throw new Error('No hay transportes disponibles para asignar pedidos.')
+  }
+
+  return optimizeDraftsGlobally(bestDrafts, context, budgetFor(clients.length))
+}
+
+function buildAssignmentOrders(clients: readonly PlanningClient[], depot: Depot) {
+  const orders = [
+    [...clients].sort(orderClientsForAssignment),
+    [...clients].sort(orderClientsByGeoSweep(depot, 1)),
+    [...clients].sort(orderClientsByGeoSweep(depot, -1)),
+    [...clients].sort(orderClientsByDistanceAndLoad(depot)),
+    [...clients].sort(orderClientsByLoadAndPriority),
+    [...clients].sort((a, b) => a.currentSequence - b.currentSequence),
+  ]
+  const seen = new Set<string>()
+
+  return orders
+    .map((orderClients) => ({
+      clients: orderClients,
+      key: orderClients.map((client) => client.clientId).join('|'),
+    }))
+    .filter((order) => {
+      if (seen.has(order.key)) {
+        return false
+      }
+      seen.add(order.key)
+      return true
+    })
+    .slice(0, clients.length > 160 ? 3 : clients.length > 100 ? 4 : 6)
+}
+
+function budgetFor(clientCount: number): OptimizationBudget {
+  if (clientCount > 160) {
+    return {
+      passes: 1,
+      allowSwaps: false,
+      maxCloseRouteSize: 2,
+      maxRelocationCandidatesPerTruck: 5,
+    }
+  }
+  if (clientCount > 100) {
+    return {
+      passes: 2,
+      allowSwaps: true,
+      maxCloseRouteSize: 3,
+      maxRelocationCandidatesPerTruck: 8,
+    }
+  }
+  return {
+    passes: GLOBAL_IMPROVEMENT_PASSES,
+    allowSwaps: true,
+    maxCloseRouteSize: Number.POSITIVE_INFINITY,
+    maxRelocationCandidatesPerTruck: Number.POSITIVE_INFINITY,
+  }
+}
+
+function assignClientsGreedily(
+  trucks: readonly {
+    id: string
+    label: string
+    type: TruckType
+    capacityPallets: number
+  }[],
+  clients: readonly PlanningClient[],
+  context: OptimizerContext,
+) {
+  const drafts = trucks.map(createDraftTruck)
+
+  for (const client of clients) {
+    const best = chooseBestTruckInsertion(drafts, client, context)
+    assignClientToDraft(drafts[best.truckIndex], client, best.routeIds, best.routeScore)
+  }
+
+  return drafts.map((draft) => {
+    if (draft.routeIds.length === 0) {
+      return draft
+    }
+    return rebuildDraft(draft, improveRoute(draft.routeIds, context), context)
+  })
+}
+
 function orderClientsForAssignment(a: PlanningClient, b: PlanningClient) {
   const windowA = a.window.endMinute ?? Number.POSITIVE_INFINITY
   const windowB = b.window.endMinute ?? Number.POSITIVE_INFINITY
@@ -262,10 +374,43 @@ function orderClientsForAssignment(a: PlanningClient, b: PlanningClient) {
   )
 }
 
+function orderClientsByGeoSweep(depot: Depot, direction: 1 | -1) {
+  return (a: PlanningClient, b: PlanningClient) => {
+    const angleA = geoAngle(a, depot) * direction
+    const angleB = geoAngle(b, depot) * direction
+    return (
+      angleA - angleB ||
+      orderClientsForAssignment(a, b) ||
+      distanceFromDepot(b, depot) - distanceFromDepot(a, depot)
+    )
+  }
+}
+
+function orderClientsByDistanceAndLoad(depot: Depot) {
+  return (a: PlanningClient, b: PlanningClient) => {
+    return (
+      distanceFromDepot(b, depot) - distanceFromDepot(a, depot) ||
+      b.pallets - a.pallets ||
+      b.priorityScore - a.priorityScore ||
+      a.currentSequence - b.currentSequence
+    )
+  }
+}
+
+function orderClientsByLoadAndPriority(a: PlanningClient, b: PlanningClient) {
+  return (
+    b.pallets - a.pallets ||
+    b.weightKg - a.weightKg ||
+    b.priorityScore - a.priorityScore ||
+    orderClientsForAssignment(a, b)
+  )
+}
+
 function chooseBestTruckInsertion(
   drafts: readonly DraftTruck[],
   client: PlanningClient,
   context: OptimizerContext,
+  excludedTruckIndexes?: ReadonlySet<number>,
 ) {
   let best:
     | {
@@ -278,6 +423,9 @@ function chooseBestTruckInsertion(
     | null = null
 
   for (let truckIndex = 0; truckIndex < drafts.length; truckIndex += 1) {
+    if (excludedTruckIndexes?.has(truckIndex)) {
+      continue
+    }
     const draft = drafts[truckIndex]
     const insertion = bestInsertion(draft.routeIds, client.clientId, draft.currentScore, context)
     const projection = projectLoad(draft, client)
@@ -306,6 +454,358 @@ function chooseBestTruckInsertion(
   return best
 }
 
+function assignClientToDraft(
+  draft: DraftTruck,
+  client: PlanningClient,
+  routeIds: readonly string[],
+  routeScore: number,
+) {
+  draft.routeIds = [...routeIds]
+  draft.currentScore = routeScore
+  draft.pallets = roundTwo(draft.pallets + client.pallets)
+  draft.weightKg = roundOne(draft.weightKg + client.weightKg)
+  draft.volumeM3 = roundTwo(draft.volumeM3 + client.volumeM3)
+  draft.lines += client.lines
+}
+
+function optimizeDraftsGlobally(
+  drafts: readonly DraftTruck[],
+  context: OptimizerContext,
+  budget: OptimizationBudget,
+) {
+  let current = closeInefficientTrucks(drafts.map(cloneDraft), context, budget)
+
+  for (let pass = 0; pass < budget.passes; pass += 1) {
+    const relocation = findBestRelocation(current, context, budget)
+    const swap = budget.allowSwaps ? findBestSwap(current, context) : null
+    const candidates = [relocation, swap].filter(
+      (candidate): candidate is DraftSetCandidate => Boolean(candidate),
+    )
+
+    if (candidates.length === 0) {
+      break
+    }
+
+    candidates.sort((a, b) => a.delta - b.delta)
+    if (candidates[0].delta >= -MIN_SCORE_IMPROVEMENT) {
+      break
+    }
+
+    current = closeInefficientTrucks(candidates[0].drafts, context, budget)
+  }
+
+  return current
+}
+
+function findBestRelocation(
+  drafts: readonly DraftTruck[],
+  context: OptimizerContext,
+  budget: OptimizationBudget,
+): DraftSetCandidate | null {
+  let best:
+    | {
+        fromIndex: number
+        toIndex: number
+        clientId: string
+        routeIds: string[]
+        rawDelta: number
+      }
+    | null = null
+
+  for (let fromIndex = 0; fromIndex < drafts.length; fromIndex += 1) {
+    const fromDraft = drafts[fromIndex]
+    if (fromDraft.routeIds.length === 0) {
+      continue
+    }
+
+    for (const clientId of relocationClientIds(fromDraft, context, budget)) {
+      const client = context.clientsById.get(clientId)
+      if (!client) {
+        continue
+      }
+
+      const routeWithoutClient = fromDraft.routeIds.filter((routeClientId) => routeClientId !== clientId)
+      const fromLoad = loadForRoute(routeWithoutClient, context)
+      const fromRouteScore = evaluateRoute(routeWithoutClient, context).operationalScore
+      const beforeFrom = draftOptimizationScore(fromDraft)
+
+      for (let toIndex = 0; toIndex < drafts.length; toIndex += 1) {
+        if (toIndex === fromIndex) {
+          continue
+        }
+
+        const toDraft = drafts[toIndex]
+        const insertion = bestInsertion(toDraft.routeIds, clientId, toDraft.currentScore, context)
+        const toLoad = projectLoad(toDraft, client)
+        const rawDelta =
+          scoreDraftState(fromDraft, fromRouteScore, fromLoad) +
+          scoreDraftState(toDraft, insertion.routeScore, toLoad) -
+          beforeFrom -
+          draftOptimizationScore(toDraft)
+
+        if (!best || rawDelta < best.rawDelta) {
+          best = {
+            fromIndex,
+            toIndex,
+            clientId,
+            routeIds: insertion.routeIds,
+            rawDelta,
+          }
+        }
+      }
+    }
+  }
+
+  if (!best) {
+    return null
+  }
+
+  const candidate = buildRelocationCandidate(
+    drafts,
+    best.fromIndex,
+    best.toIndex,
+    best.clientId,
+    best.routeIds,
+    context,
+  )
+  return candidate.delta < -MIN_SCORE_IMPROVEMENT ? candidate : null
+}
+
+function relocationClientIds(
+  draft: DraftTruck,
+  context: OptimizerContext,
+  budget: OptimizationBudget,
+) {
+  if (draft.routeIds.length <= budget.maxRelocationCandidatesPerTruck) {
+    return draft.routeIds
+  }
+
+  const selected = new Set<string>()
+  for (const clientId of draft.routeIds.slice(0, 2)) {
+    selected.add(clientId)
+  }
+  for (const clientId of draft.routeIds.slice(-2)) {
+    selected.add(clientId)
+  }
+
+  const stopScores = evaluateRoute(draft.routeIds, context).stops
+    .map((stop) => {
+      const client = context.clientsById.get(stop.clientId)
+      return {
+        clientId: stop.clientId,
+        score:
+          stop.lateMinutes * LATE_PENALTY_FACTOR +
+          stop.priorityPenalty +
+          stop.loadPenalty +
+          (client?.pallets ?? 0) * 3 +
+          (client?.loadDifficulty ?? 0),
+      }
+    })
+    .sort((a, b) => b.score - a.score)
+
+  for (const stop of stopScores) {
+    if (selected.size >= budget.maxRelocationCandidatesPerTruck) {
+      break
+    }
+    selected.add(stop.clientId)
+  }
+
+  return draft.routeIds.filter((clientId) => selected.has(clientId))
+}
+
+function findBestSwap(
+  drafts: readonly DraftTruck[],
+  context: OptimizerContext,
+): DraftSetCandidate | null {
+  let best:
+    | {
+        firstIndex: number
+        secondIndex: number
+        firstClientId: string
+        secondClientId: string
+        rawDelta: number
+      }
+    | null = null
+
+  for (let firstIndex = 0; firstIndex < drafts.length - 1; firstIndex += 1) {
+    const firstDraft = drafts[firstIndex]
+    if (firstDraft.routeIds.length === 0) {
+      continue
+    }
+
+    for (let secondIndex = firstIndex + 1; secondIndex < drafts.length; secondIndex += 1) {
+      const secondDraft = drafts[secondIndex]
+      if (secondDraft.routeIds.length === 0) {
+        continue
+      }
+
+      const beforePair = draftOptimizationScore(firstDraft) + draftOptimizationScore(secondDraft)
+
+      for (const firstClientId of firstDraft.routeIds) {
+        const firstClient = context.clientsById.get(firstClientId)
+        if (!firstClient) {
+          continue
+        }
+
+        for (const secondClientId of secondDraft.routeIds) {
+          const secondClient = context.clientsById.get(secondClientId)
+          if (!secondClient) {
+            continue
+          }
+
+          const firstRoute = replaceClient(firstDraft.routeIds, firstClientId, secondClientId)
+          const secondRoute = replaceClient(secondDraft.routeIds, secondClientId, firstClientId)
+          const firstLoad = swapClientLoad(firstDraft, firstClient, secondClient)
+          const secondLoad = swapClientLoad(secondDraft, secondClient, firstClient)
+          const firstScore = evaluateRoute(firstRoute, context).operationalScore
+          const secondScore = evaluateRoute(secondRoute, context).operationalScore
+          const rawDelta =
+            scoreDraftState(firstDraft, firstScore, firstLoad) +
+            scoreDraftState(secondDraft, secondScore, secondLoad) -
+            beforePair
+
+          if (!best || rawDelta < best.rawDelta) {
+            best = {
+              firstIndex,
+              secondIndex,
+              firstClientId,
+              secondClientId,
+              rawDelta,
+            }
+          }
+        }
+      }
+    }
+  }
+
+  if (!best) {
+    return null
+  }
+
+  const candidate = buildSwapCandidate(
+    drafts,
+    best.firstIndex,
+    best.secondIndex,
+    best.firstClientId,
+    best.secondClientId,
+    context,
+  )
+  return candidate.delta < -MIN_SCORE_IMPROVEMENT ? candidate : null
+}
+
+function buildRelocationCandidate(
+  drafts: readonly DraftTruck[],
+  fromIndex: number,
+  toIndex: number,
+  clientId: string,
+  toRouteIds: readonly string[],
+  context: OptimizerContext,
+): DraftSetCandidate {
+  const next = drafts.map(cloneDraft)
+  const fromRoute = next[fromIndex].routeIds.filter((routeClientId) => routeClientId !== clientId)
+  next[fromIndex] = rebuildDraft(next[fromIndex], improveRoute(fromRoute, context), context)
+  next[toIndex] = rebuildDraft(next[toIndex], improveRoute(toRouteIds, context), context)
+  return {
+    delta: totalDraftScore(next) - totalDraftScore(drafts),
+    drafts: next,
+  }
+}
+
+function buildSwapCandidate(
+  drafts: readonly DraftTruck[],
+  firstIndex: number,
+  secondIndex: number,
+  firstClientId: string,
+  secondClientId: string,
+  context: OptimizerContext,
+): DraftSetCandidate {
+  const next = drafts.map(cloneDraft)
+  const firstRoute = replaceClient(next[firstIndex].routeIds, firstClientId, secondClientId)
+  const secondRoute = replaceClient(next[secondIndex].routeIds, secondClientId, firstClientId)
+  next[firstIndex] = rebuildDraft(next[firstIndex], improveRoute(firstRoute, context), context)
+  next[secondIndex] = rebuildDraft(next[secondIndex], improveRoute(secondRoute, context), context)
+  return {
+    delta: totalDraftScore(next) - totalDraftScore(drafts),
+    drafts: next,
+  }
+}
+
+function closeInefficientTrucks(
+  drafts: readonly DraftTruck[],
+  context: OptimizerContext,
+  budget: OptimizationBudget,
+) {
+  let current = drafts.map(cloneDraft)
+  let improved = true
+  let attempts = 0
+
+  while (improved && attempts < current.length) {
+    improved = false
+    attempts += 1
+    const orderedIndexes = current
+      .map((draft, index) => ({ draft, index }))
+      .filter(({ draft }) => {
+        return draft.routeIds.length > 0 && draft.routeIds.length <= budget.maxCloseRouteSize
+      })
+      .sort((a, b) => {
+        return (
+          a.draft.routeIds.length - b.draft.routeIds.length ||
+          draftOptimizationScore(b.draft) - draftOptimizationScore(a.draft)
+        )
+      })
+
+    for (const { index } of orderedIndexes) {
+      const candidate = tryCloseTruck(current, index, context)
+      if (!candidate) {
+        continue
+      }
+
+      if (totalDraftScore(candidate) + MIN_SCORE_IMPROVEMENT < totalDraftScore(current)) {
+        current = candidate
+        improved = true
+        break
+      }
+    }
+  }
+
+  return current
+}
+
+function tryCloseTruck(
+  drafts: readonly DraftTruck[],
+  truckIndex: number,
+  context: OptimizerContext,
+) {
+  const sourceDraft = drafts[truckIndex]
+  if (sourceDraft.routeIds.length === 0) {
+    return null
+  }
+
+  const next = drafts.map(cloneDraft)
+  const excluded = new Set([truckIndex])
+  const clientsToMove = sourceDraft.routeIds
+    .map((clientId) => context.clientsById.get(clientId))
+    .filter((client): client is PlanningClient => Boolean(client))
+    .sort(orderClientsForAssignment)
+  next[truckIndex] = rebuildDraft(next[truckIndex], [], context)
+
+  try {
+    for (const client of clientsToMove) {
+      const best = chooseBestTruckInsertion(next, client, context, excluded)
+      assignClientToDraft(next[best.truckIndex], client, best.routeIds, best.routeScore)
+    }
+  } catch {
+    return null
+  }
+
+  return next.map((draft) => {
+    if (draft.routeIds.length === 0) {
+      return draft
+    }
+    return rebuildDraft(draft, improveRoute(draft.routeIds, context), context)
+  })
+}
+
 function bestInsertion(
   routeIds: readonly string[],
   clientId: string,
@@ -314,10 +814,11 @@ function bestInsertion(
 ) {
   if (routeIds.length === 0) {
     const candidate = [clientId]
+    const routeScore = evaluateRoute(candidate, context).operationalScore
     return {
       routeIds: candidate,
-      routeScore: evaluateRoute(candidate, context).operationalScore,
-      deltaScore: evaluateRoute(candidate, context).operationalScore,
+      routeScore,
+      deltaScore: routeScore,
     }
   }
 
@@ -351,6 +852,93 @@ function projectLoad(draft: DraftTruck, client: PlanningClient): LoadProjection 
     volumeM3: draft.volumeM3 + client.volumeM3,
     lines: draft.lines + client.lines,
   }
+}
+
+function swapClientLoad(
+  draft: DraftTruck,
+  removed: PlanningClient,
+  added: PlanningClient,
+): LoadProjection {
+  return {
+    pallets: draft.pallets - removed.pallets + added.pallets,
+    weightKg: draft.weightKg - removed.weightKg + added.weightKg,
+    volumeM3: draft.volumeM3 - removed.volumeM3 + added.volumeM3,
+    lines: draft.lines - removed.lines + added.lines,
+  }
+}
+
+function loadForRoute(routeIds: readonly string[], context: OptimizerContext): LoadProjection {
+  return routeIds.reduce(
+    (load, clientId) => {
+      const client = context.clientsById.get(clientId)
+      if (!client) {
+        return load
+      }
+      return {
+        pallets: load.pallets + client.pallets,
+        weightKg: load.weightKg + client.weightKg,
+        volumeM3: load.volumeM3 + client.volumeM3,
+        lines: load.lines + client.lines,
+      }
+    },
+    {
+      pallets: 0,
+      weightKg: 0,
+      volumeM3: 0,
+      lines: 0,
+    },
+  )
+}
+
+function cloneDraft(draft: DraftTruck): DraftTruck {
+  return {
+    ...draft,
+    routeIds: [...draft.routeIds],
+  }
+}
+
+function rebuildDraft(
+  draft: DraftTruck,
+  routeIds: readonly string[],
+  context: OptimizerContext,
+): DraftTruck {
+  const load = loadForRoute(routeIds, context)
+  return {
+    ...draft,
+    routeIds: [...routeIds],
+    currentScore: routeIds.length > 0 ? evaluateRoute(routeIds, context).operationalScore : 0,
+    pallets: roundTwo(load.pallets),
+    weightKg: roundOne(load.weightKg),
+    volumeM3: roundTwo(load.volumeM3),
+    lines: load.lines,
+  }
+}
+
+function totalDraftScore(drafts: readonly DraftTruck[]) {
+  return drafts.reduce((total, draft) => total + draftOptimizationScore(draft), 0)
+}
+
+function draftOptimizationScore(draft: DraftTruck) {
+  return scoreDraftState(draft, draft.currentScore, draft)
+}
+
+function scoreDraftState(
+  draft: DraftTruck,
+  routeScore: number,
+  load: LoadProjection,
+) {
+  if (load.lines <= 0) {
+    return 0
+  }
+  return routeScore + draft.type.fixedCostMinutes + capacityPenalty(load, draft.type.palletCapacity)
+}
+
+function replaceClient(
+  routeIds: readonly string[],
+  fromClientId: string,
+  toClientId: string,
+) {
+  return routeIds.map((clientId) => (clientId === fromClientId ? toClientId : clientId))
 }
 
 function isFeasibleProjection(load: LoadProjection, capacityPallets: number) {
@@ -413,12 +1001,63 @@ function improveRoute(routeIds: readonly string[], context: OptimizerContext) {
       }
     }
 
+    for (let from = 0; from < best.length; from += 1) {
+      for (let to = 0; to <= best.length - 1; to += 1) {
+        if (from === to) {
+          continue
+        }
+        const candidate = relocateRouteSegment(best, from, 1, to)
+        const score = evaluateRoute(candidate, context).operationalScore
+        if (score + 0.1 < bestScore) {
+          best = candidate
+          bestScore = score
+          improved = true
+        }
+      }
+    }
+
+    if (best.length <= 35) {
+      for (let from = 0; from < best.length - 1; from += 1) {
+        for (let to = 0; to <= best.length - 2; to += 1) {
+          if (to >= from && to <= from + 1) {
+            continue
+          }
+          const candidate = relocateRouteSegment(best, from, 2, to)
+          const score = evaluateRoute(candidate, context).operationalScore
+          if (score + 0.1 < bestScore) {
+            best = candidate
+            bestScore = score
+            improved = true
+          }
+        }
+      }
+    }
+
     if (!improved) {
       break
     }
   }
 
   return best
+}
+
+function relocateRouteSegment(
+  routeIds: readonly string[],
+  from: number,
+  length: number,
+  to: number,
+) {
+  const segment = routeIds.slice(from, from + length)
+  const withoutSegment = [
+    ...routeIds.slice(0, from),
+    ...routeIds.slice(from + length),
+  ]
+  const insertAt = to > from ? Math.max(0, to - length + 1) : to
+  return [
+    ...withoutSegment.slice(0, insertAt),
+    ...segment,
+    ...withoutSegment.slice(insertAt),
+  ]
 }
 
 function finalizeTruck(
@@ -504,6 +1143,12 @@ function finalizeTruck(
 }
 
 function evaluateRoute(routeIds: readonly string[], context: OptimizerContext): RouteMetrics {
+  const cacheKey = routeIds.join('\u001f')
+  const cached = context.routeCache.get(cacheKey)
+  if (cached) {
+    return cached
+  }
+
   let totalDistanceMeters = 0
   let totalDriveMinutes = 0
   let totalWaitMinutes = 0
@@ -517,7 +1162,7 @@ function evaluateRoute(routeIds: readonly string[], context: OptimizerContext): 
   for (let index = 0; index < path.length - 1; index += 1) {
     const origin = pointFor(path[index], context)
     const destination = pointFor(path[index + 1], context)
-    const distance = roadDistanceMeters(origin, destination)
+    const distance = cachedRoadDistanceMeters(origin, destination, context)
     const driveMinutes = (distance / AVERAGE_SPEED_M_PER_HOUR) * 60
     totalDistanceMeters += distance
     totalDriveMinutes += driveMinutes
@@ -588,7 +1233,7 @@ function evaluateRoute(routeIds: readonly string[], context: OptimizerContext): 
     totalLoadPenalty +
     fuelPenalty
 
-  return {
+  const metrics = {
     distanceKm: roundOne(totalDistanceMeters / 1000),
     driveMinutes: roundOne(totalDriveMinutes),
     serviceMinutes: roundOne(serviceMinutes),
@@ -602,6 +1247,8 @@ function evaluateRoute(routeIds: readonly string[], context: OptimizerContext): 
     finish: formatMinutes(currentMinute),
     stops,
   }
+  context.routeCache.set(cacheKey, metrics)
+  return metrics
 }
 
 function pointFor(clientId: string | null, context: OptimizerContext) {
@@ -627,6 +1274,42 @@ function routePolyline(routeIds: readonly string[], context: OptimizerContext): 
     lat: point.lat,
     lng: point.lng,
   }))
+}
+
+function geoAngle(
+  client: { lat: number; lng: number },
+  depot: { lat: number; lng: number },
+) {
+  return Math.atan2(client.lat - depot.lat, client.lng - depot.lng)
+}
+
+function distanceFromDepot(
+  client: { lat: number; lng: number },
+  depot: { lat: number; lng: number },
+) {
+  return Math.hypot(client.lat - depot.lat, client.lng - depot.lng)
+}
+
+function cachedRoadDistanceMeters(
+  a: (Depot | PlanningClient) & { lat: number; lng: number },
+  b: (Depot | PlanningClient) & { lat: number; lng: number },
+  context: OptimizerContext,
+) {
+  const keyA = pointCacheKey(a)
+  const keyB = pointCacheKey(b)
+  const cacheKey = keyA < keyB ? `${keyA}|${keyB}` : `${keyB}|${keyA}`
+  const cached = context.distanceCache.get(cacheKey)
+  if (cached !== undefined) {
+    return cached
+  }
+
+  const distance = roadDistanceMeters(a, b)
+  context.distanceCache.set(cacheKey, distance)
+  return distance
+}
+
+function pointCacheKey(point: Depot | PlanningClient) {
+  return 'clientId' in point ? `c:${point.clientId}` : `d:${point.id}`
 }
 
 function roadDistanceMeters(

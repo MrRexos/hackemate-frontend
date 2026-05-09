@@ -10,8 +10,8 @@ type ButtonProps = PropsWithChildren<
 >
 
 const variants: Record<ButtonVariant, string> = {
-  primary: 'bg-red-600 text-cream-50 hover:bg-red-700',
-  secondary: 'border border-cream-300 bg-cream-50 text-ink hover:bg-cream-100',
+  primary: 'bg-[#c53030] text-white hover:bg-[#b12b2b]',
+  secondary: 'bg-[#fdf9f6] text-[#806a54] hover:bg-white',
 }
 
 export function Button({
@@ -23,7 +23,7 @@ export function Button({
   return (
     <button
       className={cn(
-        'inline-flex min-h-10 items-center justify-center rounded-md px-5 text-sm font-medium transition focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-red-600',
+        'inline-flex min-h-10 items-center justify-center rounded-full px-5 text-sm font-bold transition focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[#c53030]',
         variants[variant],
         className,
       )}

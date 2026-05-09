@@ -1,7 +1,7 @@
 import type { NavigationItem } from '@/types/navigation'
 
 export const navigationItems = [
-  { view: 'pedidos', label: 'Pedidos' },
-  { view: 'organizacion', label: 'Organización' },
-  { view: 'ruta', label: 'Ruta' },
+  { view: 'pedidos', label: 'Home' },
+  { view: 'organizacion', label: 'Distribución' },
+  { view: 'ruta', label: 'Rutas' },
 ] satisfies readonly NavigationItem[]

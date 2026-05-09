@@ -9,7 +9,7 @@ type AppLayoutProps = PropsWithChildren<{
 
 export function AppLayout({ activeView, children, onNavigate }: AppLayoutProps) {
   return (
-    <div className="min-h-screen bg-cream-50 text-ink">
+    <div className="min-h-screen bg-[#fdf4ec] text-[#47392b]">
       <SiteHeader activeView={activeView} onNavigate={onNavigate} />
       <main>{children}</main>
     </div>

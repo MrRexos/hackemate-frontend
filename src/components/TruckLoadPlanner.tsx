@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import * as THREE from 'three'
 import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js'
 import type { LoadPiece, TruckLoadPlan, TruckPallet } from '@/utils/loadPlanner'
@@ -7,6 +7,8 @@ import { materialRuleFor } from '@/utils/loadPlanner'
 type TruckLoadPlannerProps = {
   plan: TruckLoadPlan
   onSelectClient: (clientId: string) => void
+  selectedClientId?: string
+  showFloorPlan?: boolean
 }
 
 type VisualUnit = LoadPiece & {
@@ -17,7 +19,12 @@ type VisualUnit = LoadPiece & {
 const numberFormatter = new Intl.NumberFormat('es-ES')
 const decimalFormatter = new Intl.NumberFormat('es-ES', { maximumFractionDigits: 1 })
 
-export function TruckLoadPlanner({ plan, onSelectClient }: TruckLoadPlannerProps) {
+export function TruckLoadPlanner({
+  plan,
+  onSelectClient,
+  selectedClientId,
+  showFloorPlan = false,
+}: TruckLoadPlannerProps) {
   const firstOccupiedPallet = useMemo(
     () => plan.pallets.find((pallet) => !pallet.isEmpty) ?? plan.pallets[0],
     [plan.pallets],
@@ -26,20 +33,20 @@ export function TruckLoadPlanner({ plan, onSelectClient }: TruckLoadPlannerProps
   const selectedPallet =
     plan.pallets.find((pallet) => pallet.id === selectedPalletId) ?? firstOccupiedPallet
 
-  function handleSelectPallet(pallet: TruckPallet) {
+  const handleSelectPallet = useCallback((pallet: TruckPallet) => {
     setSelectedPalletId(pallet.id)
     const firstClient = pallet.clients[0]
     if (firstClient) {
       onSelectClient(firstClient.clientId)
     }
-  }
+  }, [onSelectClient])
 
   return (
-    <div>
+    <div className="min-w-0">
       <div className="flex flex-wrap items-start justify-between gap-4">
         <div>
-          <h2 className="text-base font-medium text-ink">Camión visual</h2>
-          <p className="mt-1 text-sm text-muted">
+          <h2 className="text-base font-bold text-[#47392b]">Camión visual</h2>
+          <p className="mt-1 text-sm font-medium text-[#806a54]">
             {plan.summary.occupiedPallets}/{plan.summary.totalSlots} palets ocupados ·{' '}
             {decimalFormatter.format(plan.summary.utilization)} % de capacidad · balance{' '}
             {formatKg(plan.summary.leftWeightKg)} / {formatKg(plan.summary.rightWeightKg)}
@@ -48,7 +55,7 @@ export function TruckLoadPlanner({ plan, onSelectClient }: TruckLoadPlannerProps
         <div className="flex flex-wrap gap-2">
           {plan.materialLegend.map((material) => (
             <span
-              className="inline-flex items-center gap-1.5 rounded-md border border-cream-300 bg-cream-100 px-2 py-1 text-xs font-medium text-ink"
+              className="inline-flex items-center gap-1.5 rounded-[10px] bg-[#f6e5d4] px-2.5 py-1 text-xs font-bold text-[#806a54]"
               key={material.type}
             >
               <span
@@ -61,10 +68,19 @@ export function TruckLoadPlanner({ plan, onSelectClient }: TruckLoadPlannerProps
         </div>
       </div>
 
-      <div className="mt-5 grid gap-6 xl:grid-cols-[0.92fr_1.08fr]">
+      {showFloorPlan ? (
+        <TruckTopDownScene
+          onSelectPallet={handleSelectPallet}
+          plan={plan}
+          selectedClientId={selectedClientId}
+          selectedPalletId={selectedPallet.id}
+        />
+      ) : null}
+
+      <div className="mt-5 grid grid-cols-[minmax(0,1fr)] gap-6 xl:grid-cols-[minmax(0,0.92fr)_minmax(0,1.08fr)]">
         <div>
-          <div className="grid gap-2 rounded-md border border-cream-300 bg-cream-100/50 p-3">
-            <p className="text-center text-xs font-medium uppercase tracking-wide text-muted">
+          <div className="grid gap-2 rounded-[13px] bg-[#f6e5d4] p-3">
+            <p className="text-center text-[11px] font-bold uppercase leading-none tracking-wide text-[#a99583]">
               Frontal
             </p>
             <div className="grid grid-cols-2 gap-2">
@@ -80,13 +96,13 @@ export function TruckLoadPlanner({ plan, onSelectClient }: TruckLoadPlannerProps
                   />
                 ))}
             </div>
-            <p className="text-center text-xs font-medium uppercase tracking-wide text-red-600">
+            <p className="text-center text-[11px] font-bold uppercase leading-none tracking-wide text-[#c53030]">
               Puerta trasera
             </p>
           </div>
 
           <div className="mt-4 grid grid-cols-2 gap-3 sm:grid-cols-4">
-        <LoadMetric label="Palets eq." value={formatPallets(plan.summary.usedPallets)} />
+            <LoadMetric label="Palets eq." value={formatPallets(plan.summary.usedPallets)} />
             <LoadMetric label="Peso" value={formatKg(plan.summary.weightKg)} />
             <LoadMetric label="Volumen" value={formatM3(plan.summary.volumeM3)} />
             <LoadMetric
@@ -105,6 +121,218 @@ export function TruckLoadPlanner({ plan, onSelectClient }: TruckLoadPlannerProps
   )
 }
 
+function TruckTopDownScene({
+  onSelectPallet,
+  plan,
+  selectedClientId,
+  selectedPalletId,
+}: {
+  onSelectPallet: (pallet: TruckPallet) => void
+  plan: TruckLoadPlan
+  selectedClientId?: string
+  selectedPalletId: string
+}) {
+  const containerRef = useRef<HTMLDivElement | null>(null)
+  const selectedPallet = plan.pallets.find((pallet) => pallet.id === selectedPalletId) ?? plan.pallets[0]
+
+  useEffect(() => {
+    const container = containerRef.current
+    if (!container) {
+      return
+    }
+    const containerElement = container
+
+    const rowCount = Math.max(1, Math.ceil(plan.constraints.slots / 2))
+    const slotPitch = 1.54
+    const lanePitch = 0.94
+    const truckLength = rowCount * slotPitch + 0.62
+    const truckWidth = lanePitch + 1.08
+    const rowOffset = ((rowCount - 1) * slotPitch) / 2
+    const palletsById = new Map(plan.pallets.map((pallet) => [pallet.id, pallet]))
+
+    const scene = new THREE.Scene()
+    scene.background = new THREE.Color('#fdf9f6')
+
+    const camera = new THREE.OrthographicCamera(-1, 1, 1, -1, 0.1, 50)
+    camera.position.set(0, 8, 0)
+    camera.up.set(0, 0, -1)
+    camera.lookAt(0, 0, 0)
+
+    const renderer = new THREE.WebGLRenderer({ antialias: true })
+    renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2))
+    renderer.domElement.setAttribute('aria-label', 'Vista superior de la planta del camión')
+    renderer.domElement.setAttribute('role', 'img')
+    renderer.domElement.style.cursor = 'pointer'
+    container.appendChild(renderer.domElement)
+
+    scene.add(new THREE.HemisphereLight('#ffffff', '#e8ddd0', 2.6))
+    const topLight = new THREE.DirectionalLight('#ffffff', 2.8)
+    topLight.position.set(0, 6, 0)
+    scene.add(topLight)
+
+    const floorMaterial = new THREE.MeshStandardMaterial({ color: '#f6e5d4', roughness: 0.78 })
+    const railMaterial = new THREE.MeshStandardMaterial({ color: '#806a54', roughness: 0.62 })
+    const cabMaterial = new THREE.MeshStandardMaterial({ color: '#d9c8b7', roughness: 0.58 })
+    const glassMaterial = new THREE.MeshStandardMaterial({ color: '#8aa0aa', roughness: 0.35 })
+    const dividerMaterial = new THREE.LineBasicMaterial({
+      color: '#a99583',
+      transparent: true,
+      opacity: 0.55,
+    })
+
+    const floor = new THREE.Mesh(new THREE.BoxGeometry(truckLength, 0.05, truckWidth), floorMaterial)
+    floor.position.y = -0.03
+    scene.add(floor)
+
+    const sideRailGeometry = new THREE.BoxGeometry(truckLength, 0.08, 0.035)
+    for (const z of [-truckWidth / 2, truckWidth / 2]) {
+      const rail = new THREE.Mesh(sideRailGeometry, railMaterial)
+      rail.position.set(0, 0.03, z)
+      scene.add(rail)
+    }
+
+    const rearRail = new THREE.Mesh(new THREE.BoxGeometry(0.035, 0.08, truckWidth), railMaterial)
+    rearRail.position.set(-truckLength / 2, 0.03, 0)
+    scene.add(rearRail)
+
+    const frontRail = new THREE.Mesh(new THREE.BoxGeometry(0.035, 0.08, truckWidth), railMaterial)
+    frontRail.position.set(truckLength / 2, 0.03, 0)
+    scene.add(frontRail)
+
+    const cab = new THREE.Mesh(new THREE.BoxGeometry(0.64, 0.08, truckWidth * 0.78), cabMaterial)
+    cab.position.set(truckLength / 2 + 0.4, 0.01, 0)
+    scene.add(cab)
+
+    const windshield = new THREE.Mesh(new THREE.BoxGeometry(0.2, 0.09, truckWidth * 0.54), glassMaterial)
+    windshield.position.set(truckLength / 2 + 0.18, 0.06, 0)
+    scene.add(windshield)
+
+    const laneDividerGeometry = new THREE.BufferGeometry().setFromPoints([
+      new THREE.Vector3(-truckLength / 2 + 0.16, 0.05, 0),
+      new THREE.Vector3(truckLength / 2 - 0.16, 0.05, 0),
+    ])
+    scene.add(new THREE.Line(laneDividerGeometry, dividerMaterial))
+
+    for (const pallet of plan.pallets) {
+      const palletGroup = createPalletSceneContent(pallet, {
+        rotate: false,
+        selectedClientId,
+      })
+      const laneZ = pallet.lane === 'left' ? -lanePitch / 2 : lanePitch / 2
+      palletGroup.position.set(pallet.row * slotPitch - rowOffset, 0.06, laneZ)
+      palletGroup.scale.setScalar(0.88)
+      tagPalletObjects(palletGroup, pallet.id)
+      scene.add(palletGroup)
+
+      if (pallet.id === selectedPalletId) {
+        const frame = createSelectionFrame(1.34, 0.9)
+        frame.position.set(palletGroup.position.x, 0.08, palletGroup.position.z)
+        scene.add(frame)
+      }
+    }
+
+    const raycaster = new THREE.Raycaster()
+    const pointer = new THREE.Vector2()
+
+    function render() {
+      renderer.render(scene, camera)
+    }
+
+    function resize() {
+      const width = Math.max(containerElement.clientWidth, 1)
+      const height = Math.max(containerElement.clientHeight, 1)
+      const aspect = width / height
+      const baseWidth = truckLength + 1.32
+      const baseHeight = truckWidth + 0.72
+      let viewWidth = baseWidth
+      let viewHeight = baseHeight
+
+      if (viewWidth / viewHeight < aspect) {
+        viewWidth = viewHeight * aspect
+      } else {
+        viewHeight = viewWidth / aspect
+      }
+
+      camera.left = -viewWidth / 2
+      camera.right = viewWidth / 2
+      camera.top = viewHeight / 2
+      camera.bottom = -viewHeight / 2
+      camera.updateProjectionMatrix()
+      renderer.setSize(width, height, false)
+      render()
+    }
+
+    function handlePointerDown(event: PointerEvent) {
+      const rect = renderer.domElement.getBoundingClientRect()
+      pointer.x = ((event.clientX - rect.left) / rect.width) * 2 - 1
+      pointer.y = -((event.clientY - rect.top) / rect.height) * 2 + 1
+      raycaster.setFromCamera(pointer, camera)
+
+      const hit = raycaster
+        .intersectObjects(scene.children, true)
+        .find((intersection) => typeof intersection.object.userData.palletId === 'string')
+      const palletId = hit?.object.userData.palletId
+      const pallet = typeof palletId === 'string' ? palletsById.get(palletId) : undefined
+
+      if (pallet) {
+        onSelectPallet(pallet)
+      }
+    }
+
+    const observer = new ResizeObserver(resize)
+    observer.observe(containerElement)
+    renderer.domElement.addEventListener('pointerdown', handlePointerDown)
+    resize()
+
+    return () => {
+      observer.disconnect()
+      renderer.domElement.removeEventListener('pointerdown', handlePointerDown)
+      disposeObject(scene)
+      renderer.dispose()
+      renderer.domElement.remove()
+    }
+  }, [onSelectPallet, plan, selectedClientId, selectedPalletId])
+
+  return (
+    <section className="mt-5">
+      <div className="mb-3 flex flex-wrap items-end justify-between gap-3">
+        <div>
+          <h3 className="text-sm font-bold text-[#47392b]">Planta del camión</h3>
+          <p className="mt-1 text-xs font-medium text-[#806a54]">
+            Vista superior horizontal con los palets en su posición real y los productos por color.
+          </p>
+        </div>
+        <div className="flex items-center gap-2 rounded-full bg-[#f6e5d4] px-3 py-1.5 text-[11px] font-bold uppercase tracking-wide text-[#806a54]">
+          <span>Puerta trasera</span>
+          <span className="h-px w-8 bg-[#c53030]" />
+          <span>Frontal</span>
+        </div>
+      </div>
+      <div className="relative min-h-[320px] overflow-hidden rounded-[13px] bg-[#fdf9f6] ring-1 ring-[#f1e5d9]">
+        <div className="absolute inset-0" ref={containerRef} />
+        <div className="pointer-events-none absolute left-3 top-3 rounded-[11px] bg-[#fdf9f6]/95 px-3 py-2 text-xs font-bold text-[#47392b] shadow-sm">
+          Puerta trasera
+        </div>
+        <div className="pointer-events-none absolute right-3 top-3 rounded-[11px] bg-[#fdf9f6]/95 px-3 py-2 text-xs font-bold text-[#47392b] shadow-sm">
+          Cabina
+        </div>
+        <div className="pointer-events-none absolute inset-x-3 bottom-3 rounded-[13px] bg-[#fdf9f6]/95 px-3 py-2 shadow-sm">
+          <p className="truncate text-xs font-bold text-[#47392b]">
+            {selectedPallet.id} · {selectedPallet.positionLabel} ·{' '}
+            {selectedPallet.isEmpty
+              ? 'Palet libre'
+              : selectedPallet.clients.map((client) => `${client.stop}. ${client.name}`).join(' / ')}
+          </p>
+          <p className="mt-1 text-[11px] font-medium text-[#806a54]">
+            {formatPallets(selectedPallet.usedPallets)} pal · {formatKg(selectedPallet.weightKg)} ·{' '}
+            {decimalFormatter.format(selectedPallet.utilization)} %
+          </p>
+        </div>
+      </div>
+    </section>
+  )
+}
+
 function PalletSlotButton({
   pallet,
   isSelected,
@@ -116,43 +344,47 @@ function PalletSlotButton({
 }) {
   const lane = pallet.lane === 'left' ? 'Izq.' : 'Der.'
   const baseClass = pallet.isEmpty
-    ? 'border-cream-200 bg-cream-50/70 text-muted'
-    : 'border-cream-300 bg-cream-50 text-ink hover:border-red-200 hover:bg-red-50/50'
-  const selectedClass = isSelected ? 'border-red-500 bg-red-50 ring-2 ring-red-200' : baseClass
+    ? 'bg-[#fdf9f6]/65 text-[#a99583]'
+    : 'bg-[#fdf9f6] text-[#47392b] hover:bg-white'
+  const selectedClass = isSelected ? 'bg-[#c53030] text-white ring-2 ring-[#c53030]/20' : baseClass
 
   return (
     <button
       aria-label={`${pallet.id} ${pallet.accessLabel}`}
       aria-pressed={isSelected}
-      className={`min-h-28 rounded-md border p-3 text-left transition focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-red-500 ${selectedClass}`}
+      className={`min-h-28 rounded-[13px] p-3 text-left transition focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#c53030] ${selectedClass}`}
       onClick={onSelect}
       type="button"
     >
       <div className="flex items-center justify-between gap-2">
-        <span className="text-sm font-semibold">{pallet.id}</span>
-        <span className="rounded-md border border-cream-300 bg-cream-50 px-2 py-0.5 text-[11px] font-medium text-muted">
+        <span className="text-sm font-bold">{pallet.id}</span>
+        <span
+          className={`rounded-[10px] px-2 py-0.5 text-[11px] font-bold ${
+            isSelected ? 'bg-white/20 text-white/80' : 'bg-[#f6e5d4] text-[#a99583]'
+          }`}
+        >
           {lane}
         </span>
       </div>
-      <p className="mt-1 text-xs font-medium text-muted">{pallet.accessLabel}</p>
-      <div className="mt-3 h-1.5 overflow-hidden rounded-full bg-cream-200">
+      <p className={`mt-1 text-xs font-bold ${isSelected ? 'text-white/75' : 'text-[#a99583]'}`}>{pallet.accessLabel}</p>
+      <div className={`mt-3 h-1.5 overflow-hidden rounded-full ${isSelected ? 'bg-white/25' : 'bg-[#f6e5d4]'}`}>
         <span
-          className="block h-full rounded-full bg-red-600"
+          className={`block h-full rounded-full ${isSelected ? 'bg-white' : 'bg-[#c53030]'}`}
           style={{ width: `${Math.min(100, pallet.utilization)}%` }}
         />
       </div>
       <div className="mt-3 space-y-1">
         {pallet.clients.slice(0, 2).map((client) => (
-          <p className="truncate text-xs font-medium" key={client.clientId} title={client.name}>
+          <p className="truncate text-xs font-bold" key={client.clientId} title={client.name}>
             {client.stop}. {client.name}
           </p>
         ))}
         {pallet.clients.length > 2 ? (
-          <p className="text-xs text-muted">+{pallet.clients.length - 2} paradas</p>
+          <p className={`text-xs font-medium ${isSelected ? 'text-white/75' : 'text-[#806a54]'}`}>+{pallet.clients.length - 2} paradas</p>
         ) : null}
-        {pallet.isEmpty ? <p className="text-xs text-muted">Libre</p> : null}
+        {pallet.isEmpty ? <p className={`text-xs font-medium ${isSelected ? 'text-white/75' : 'text-[#806a54]'}`}>Libre</p> : null}
       </div>
-      <p className="mt-3 text-xs text-muted">
+      <p className={`mt-3 text-xs font-medium ${isSelected ? 'text-white/75' : 'text-[#806a54]'}`}>
         {formatPallets(pallet.usedPallets)} pal · {formatKg(pallet.weightKg)}
       </p>
     </button>
@@ -169,7 +401,7 @@ function PalletThreeScene({ pallet }: { pallet: TruckPallet }) {
     }
 
     const scene = new THREE.Scene()
-    scene.background = new THREE.Color('#FFFBF7')
+    scene.background = new THREE.Color('#fdf9f6')
 
     const camera = new THREE.PerspectiveCamera(38, 1, 0.1, 100)
     camera.position.set(1.85, 1.35, 1.85)
@@ -230,9 +462,9 @@ function PalletThreeScene({ pallet }: { pallet: TruckPallet }) {
   }, [pallet])
 
   return (
-    <div className="relative min-h-[360px] overflow-hidden rounded-md bg-cream-100" ref={containerRef}>
+    <div className="relative min-h-[360px] overflow-hidden rounded-[13px] bg-[#f6e5d4]" ref={containerRef}>
       {pallet.isEmpty ? (
-        <div className="pointer-events-none absolute inset-x-0 top-4 text-center text-sm font-medium text-muted">
+        <div className="pointer-events-none absolute inset-x-0 top-4 text-center text-sm font-bold text-[#806a54]">
           Palet libre
         </div>
       ) : null}
@@ -261,38 +493,38 @@ function SelectedPalletDetails({ pallet }: { pallet: TruckPallet }) {
   return (
     <div className="mt-4 grid gap-4">
       <div>
-        <p className="text-xs font-medium uppercase tracking-wide text-muted">Palet seleccionado</p>
-        <h3 className="mt-1 text-lg font-semibold text-ink">
+        <p className="text-[11px] font-bold uppercase leading-none tracking-wide text-[#b8aa9c]">Palet seleccionado</p>
+        <h3 className="mt-2 text-lg font-bold text-[#47392b]">
           {pallet.id} · {pallet.positionLabel}
         </h3>
-        <p className="mt-2 text-sm text-muted">
+        <p className="mt-2 text-sm font-medium text-[#806a54]">
           {pallet.accessLabel} · {formatPallets(pallet.usedPallets)} palets ·{' '}
           {formatKg(pallet.weightKg)}
         </p>
         <div className="mt-3 space-y-1.5">
           {pallet.clients.map((client) => (
-            <p className="truncate text-sm font-medium text-ink" key={client.clientId}>
+            <p className="truncate text-sm font-bold text-[#47392b]" key={client.clientId}>
               {client.stop}. {client.name}
             </p>
           ))}
-          {pallet.clients.length === 0 ? <p className="text-sm text-muted">Reserva libre</p> : null}
+          {pallet.clients.length === 0 ? <p className="text-sm font-medium text-[#806a54]">Reserva libre</p> : null}
         </div>
       </div>
 
       <div className="grid gap-2">
         {piecesByType.map((piece) => (
-          <div className="rounded-md border border-cream-200 bg-cream-100/50 p-3" key={piece.label}>
+          <div className="rounded-[13px] bg-[#f6e5d4] p-3" key={piece.label}>
             <div className="flex items-center gap-2">
               <span className="h-2.5 w-2.5 rounded-sm" style={{ backgroundColor: piece.color }} />
-              <span className="text-sm font-medium text-ink">{piece.label}</span>
+              <span className="text-sm font-bold text-[#47392b]">{piece.label}</span>
             </div>
-            <p className="mt-2 text-xs text-muted">
+            <p className="mt-2 text-xs font-medium text-[#806a54]">
               {formatPallets(piece.palletShare)} pal · {formatKg(piece.weightKg)}
             </p>
           </div>
         ))}
         {pallet.warnings.map((warning) => (
-          <div className="rounded-md border border-red-200 bg-red-50 p-3 text-xs font-medium text-red-700" key={warning}>
+          <div className="rounded-[13px] bg-[#f7d9cf] p-3 text-xs font-bold text-[#9b2c2c]" key={warning}>
             {warning}
           </div>
         ))}
@@ -303,14 +535,17 @@ function SelectedPalletDetails({ pallet }: { pallet: TruckPallet }) {
 
 function LoadMetric({ label, value }: { label: string; value: string }) {
   return (
-    <div className="rounded-md border border-cream-200 bg-cream-100/50 p-3">
-      <p className="text-xs font-medium uppercase tracking-wide text-muted">{label}</p>
-      <p className="mt-1 text-base font-semibold text-ink">{value}</p>
+    <div className="rounded-[13px] bg-[#f6e5d4] p-3">
+      <p className="text-[11px] font-bold uppercase leading-none tracking-wide text-[#b8aa9c]">{label}</p>
+      <p className="mt-2 text-base font-bold text-[#806a54]">{value}</p>
     </div>
   )
 }
 
-function createPalletSceneContent(pallet: TruckPallet) {
+function createPalletSceneContent(
+  pallet: TruckPallet,
+  options: { rotate?: boolean; selectedClientId?: string } = {},
+) {
   const group = new THREE.Group()
   group.add(createPalletBase())
 
@@ -328,13 +563,17 @@ function createPalletSceneContent(pallet: TruckPallet) {
     const position = cellPositions[cellIndex]
     const size = unitSize(unit)
     const baseY = 0.1 + cellHeights[cellIndex]
-    const mesh = createLoadMesh(unit, size)
+    const mesh = createLoadMesh(unit, size, {
+      dimmed: Boolean(options.selectedClientId && unit.clientId !== options.selectedClientId),
+    })
     mesh.position.set(position.x, baseY + size.height / 2, position.z)
     cellHeights[cellIndex] += size.height + 0.014
     group.add(mesh)
   }
 
-  group.rotation.y = -0.48
+  if (options.rotate !== false) {
+    group.rotation.y = -0.48
+  }
   return group
 }
 
@@ -358,13 +597,23 @@ function createPalletBase() {
   return group
 }
 
-function createLoadMesh(unit: VisualUnit, size: { width: number; depth: number; height: number }) {
+function createLoadMesh(
+  unit: VisualUnit,
+  size: { width: number; depth: number; height: number },
+  options: { dimmed?: boolean } = {},
+) {
   const material = new THREE.MeshStandardMaterial({
     color: unit.color,
     metalness: unit.productType === 'lata' ? 0.22 : 0.04,
+    opacity: options.dimmed ? 0.28 : 1,
     roughness: unit.productType === 'lata' ? 0.42 : 0.68,
+    transparent: options.dimmed,
   })
-  const edgeMaterial = new THREE.LineBasicMaterial({ color: '#3A2B25', transparent: true, opacity: 0.35 })
+  const edgeMaterial = new THREE.LineBasicMaterial({
+    color: '#3A2B25',
+    transparent: true,
+    opacity: options.dimmed ? 0.12 : 0.35,
+  })
 
   if (unit.shape === 'cylinder') {
     const radius = Math.min(size.width, size.depth) / 2
@@ -387,6 +636,34 @@ function createLoadMesh(unit: VisualUnit, size: { width: number; depth: number; 
   }
 
   return mesh
+}
+
+function createSelectionFrame(width: number, depth: number) {
+  const group = new THREE.Group()
+  const material = new THREE.MeshBasicMaterial({ color: '#c53030' })
+  const horizontalGeometry = new THREE.BoxGeometry(width, 0.035, 0.035)
+  const verticalGeometry = new THREE.BoxGeometry(0.035, 0.035, depth)
+
+  for (const z of [-depth / 2, depth / 2]) {
+    const line = new THREE.Mesh(horizontalGeometry, material)
+    line.position.z = z
+    group.add(line)
+  }
+
+  for (const x of [-width / 2, width / 2]) {
+    const line = new THREE.Mesh(verticalGeometry, material)
+    line.position.x = x
+    group.add(line)
+  }
+
+  return group
+}
+
+function tagPalletObjects(group: THREE.Object3D, palletId: string) {
+  group.userData.palletId = palletId
+  group.traverse((child) => {
+    child.userData.palletId = palletId
+  })
 }
 
 function expandVisualUnits(pieces: readonly LoadPiece[]) {
@@ -451,7 +728,7 @@ function unitSize(unit: VisualUnit) {
 
 function disposeObject(object: THREE.Object3D) {
   object.traverse((child) => {
-    if (child instanceof THREE.Mesh || child instanceof THREE.LineSegments) {
+    if (child instanceof THREE.Mesh || child instanceof THREE.LineSegments || child instanceof THREE.Line) {
       child.geometry.dispose()
       if (Array.isArray(child.material)) {
         child.material.forEach((material) => material.dispose())
