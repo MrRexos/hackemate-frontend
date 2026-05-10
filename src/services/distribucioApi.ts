@@ -6,6 +6,7 @@ import type { LiniaDistribucio } from '@/domain/palletPacking'
 
 import type { TipusCamio } from '@/models/Camio'
 
+import { getLiniesExcelRutesSiExisteix } from '@/data/excelRutesLiniesRegistry'
 import { getLiniesDistribucioMock } from '@/data/mockDistribucio'
 import { getSupabaseBrowser, isSupabaseConfigured } from '@/lib/supabaseClient'
 import { fetchLiniesDistribucioEmpresaDesDeOrdre } from '@/services/fetchDistribucioEmpresa'
@@ -19,7 +20,7 @@ import {
   type FilaSupabase,
 } from '@/services/supabaseDistribucioMappers'
 
-export type OrigenLiniesDistribucio = 'supabase' | 'mock'
+export type OrigenLiniesDistribucio = 'supabase' | 'mock' | 'excel'
 
 export type ResultatLiniesDistribucio = {
   linies: LiniaDistribucio[]
@@ -108,6 +109,14 @@ export async function fetchLiniesDistribucioAmbOrigen(
   ordreEntregues: readonly OrdreEntregaRuta[] | null = null,
   tipusCamio: TipusCamio | null = null,
 ): Promise<ResultatLiniesDistribucio> {
+  const liniesExcel = getLiniesExcelRutesSiExisteix(rutaId)
+  if (liniesExcel?.length) {
+    return {
+      linies: aplicarCapacitatSiCal(liniesExcel, tipusCamio),
+      origen: 'excel',
+    }
+  }
+
   if (!isSupabaseConfigured()) {
     return {
       linies: aplicarCapacitatSiCal(getLiniesDistribucioMock(rutaId, totalParades), tipusCamio),

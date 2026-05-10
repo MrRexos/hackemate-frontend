@@ -1,5 +1,12 @@
+import excelRutesDoc from './excel-rutes.json'
+
 import { Camio, TipusCamio } from '../models/Camio'
-import { assignarRutesACamions, crearRutesSimulades } from '../services/assignacioRutes'
+import { assignarRutesACamions } from '../services/assignacioRutes'
+import {
+  carregarRutesILiniesDesExcel,
+  type ExcelRutesDocument,
+} from '../services/excelRutesFleet'
+import { setExcelRutesLiniesPerRuta } from './excelRutesLiniesRegistry'
 
 export const camions: Camio[] = [
   new Camio('A1B2C3D', TipusCamio.Mitja),
@@ -22,8 +29,11 @@ export const camions: Camio[] = [
   new Camio('Z3C7V1B', TipusCamio.Petit),
 ]
 
-/** Simula entrada de rutes i assignació al carregar la flota (ordre igual que l’entrada API). */
-assignarRutesACamions(camions, crearRutesSimulades())
+const { rutes: rutesExcel, liniesPerRutaId } = carregarRutesILiniesDesExcel(
+  excelRutesDoc as unknown as ExcelRutesDocument,
+)
+setExcelRutesLiniesPerRuta(liniesPerRutaId)
+assignarRutesACamions(camions, rutesExcel)
 
 export function getCamions(): Camio[] {
   return camions;

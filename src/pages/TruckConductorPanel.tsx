@@ -7,9 +7,7 @@ import { buttonCn, mapControlFabCn } from '@/components/ui/Button'
 import { cn } from '@/utils/cn'
 import type { RepartimentRetornCaixesBarrils } from '@/domain/palletPacking'
 import {
-  descripcioUbicacioRetornablesParada,
   repartirRetorn60PercentEnCaixesIBarrils,
-  resumRepartimentRetornText,
   volumMercaderiaNoRetornableParadaAlPla,
 } from '@/domain/palletPacking'
 import type { Camio } from '@/models/Camio'
