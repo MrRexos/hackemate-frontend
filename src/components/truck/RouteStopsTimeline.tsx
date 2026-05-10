@@ -9,10 +9,14 @@ type Props = {
   totalPathMeters: number | null
   distanceAlong: number
   completedDeliveryIndices: ReadonlySet<number>
+  /** Entrega saltada (no s’ha pogut baixar mercaderia); la simulació ha reconegut la parada. */
+  skippedDeliveryIndices?: ReadonlySet<number>
 }
 
 /** Alçada fixa de cada fila: el centre del node coincideix amb el salt de la línia vertical. */
 export const TIMELINE_ROW_HEIGHT_PX = 88
+
+const CAP_SKIPPED_BUIT: ReadonlySet<number> = new Set()
 
 /**
  * Línia vertical contínua amb nodes; el tram gruixut segueix la distància recorreguda al llarg de la ruta real.
@@ -23,7 +27,9 @@ export function RouteStopsTimeline({
   totalPathMeters,
   distanceAlong,
   completedDeliveryIndices,
+  skippedDeliveryIndices,
 }: Props) {
+  const skipped = skippedDeliveryIndices ?? CAP_SKIPPED_BUIT
   const spineTopPx = TIMELINE_ROW_HEIGHT_PX / 2
   const spineHeightPx =
     parades.length > 1 ? (parades.length - 1) * TIMELINE_ROW_HEIGHT_PX : 0
@@ -83,6 +89,7 @@ export function RouteStopsTimeline({
         const threshold = stopDistances?.[index]
         const nodeReached =
           threshold != null && totalPathMeters != null && d >= threshold - 0.5
+        const deliverySkipped = !magatzem && skipped.has(index)
         const deliveryDone = !magatzem && completedDeliveryIndices.has(index)
 
         return (
@@ -97,13 +104,17 @@ export function RouteStopsTimeline({
                 className={cn(
                   'shrink-0 rounded-full border-2 border-white shadow-sm transition-colors duration-200',
                   magatzem ? 'h-3 w-3' : 'h-2.5 w-2.5',
-                  deliveryDone
-                    ? 'bg-emerald-600 ring-2 ring-emerald-500/30'
-                    : nodeReached
-                      ? 'bg-slate-900 ring-2 ring-slate-900/25'
-                      : 'bg-white ring-2 ring-slate-300',
+                  deliverySkipped
+                    ? 'bg-amber-500 ring-2 ring-amber-400/40'
+                    : deliveryDone
+                      ? 'bg-emerald-600 ring-2 ring-emerald-500/30'
+                      : nodeReached
+                        ? 'bg-slate-900 ring-2 ring-slate-900/25'
+                        : 'bg-white ring-2 ring-slate-300',
                 )}
-                title={magatzem ? 'Magatzem' : 'Entrega'}
+                title={
+                  magatzem ? 'Magatzem' : deliverySkipped ? 'Entrega no realitzada' : 'Entrega'
+                }
               />
             </div>
 
@@ -119,6 +130,10 @@ export function RouteStopsTimeline({
               {magatzem ? (
                 <span className="mt-0.5 block text-[11px] font-medium uppercase tracking-wide text-slate-500">
                   Magatzem
+                </span>
+              ) : deliverySkipped ? (
+                <span className="mt-0.5 block text-[11px] font-semibold text-amber-800">
+                  Entrega no realitzada
                 </span>
               ) : deliveryDone ? (
                 <span className="mt-0.5 block text-[11px] font-semibold text-emerald-700">

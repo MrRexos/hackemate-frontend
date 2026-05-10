@@ -45,9 +45,11 @@ export function fingerprintLiniesDistribucio(linies: LiniaDistribucio[]): string
 
 export function haIniciatRutaConductorSession(session: ConductorRouteSession | null): boolean {
   if (!session) return false
+  const saltades = session.skippedDeliveryIndices?.length ?? 0
   return (
     session.distanceAlong > 0 ||
     session.completedDeliveryIndices.length > 0 ||
+    saltades > 0 ||
     session.journeyCompleteOpen === true
   )
 }

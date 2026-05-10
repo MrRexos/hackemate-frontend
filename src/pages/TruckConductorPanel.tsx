@@ -60,6 +60,7 @@ function isElementFullyVisibleInScroller(row: HTMLElement, scroller: HTMLElement
 function bootstrapConductorFromStorage(camio: Camio): {
   distanceAlong: number
   completedDeliveryIndices: ReadonlySet<number>
+  skippedDeliveryIndices: ReadonlySet<number>
   speedKmh: number
   journeyCompleteOpen: boolean
   sessionInitialDistanceAlong: number | undefined
@@ -69,6 +70,7 @@ function bootstrapConductorFromStorage(camio: Camio): {
     return {
       distanceAlong: 0,
       completedDeliveryIndices: new Set(),
+      skippedDeliveryIndices: new Set(),
       speedKmh: 48,
       journeyCompleteOpen: false,
       sessionInitialDistanceAlong: undefined,
@@ -79,6 +81,7 @@ function bootstrapConductorFromStorage(camio: Camio): {
     return {
       distanceAlong: 0,
       completedDeliveryIndices: new Set(),
+      skippedDeliveryIndices: new Set(),
       speedKmh: 48,
       journeyCompleteOpen: false,
       sessionInitialDistanceAlong: undefined,
@@ -87,6 +90,7 @@ function bootstrapConductorFromStorage(camio: Camio): {
   return {
     distanceAlong: snap.distanceAlong,
     completedDeliveryIndices: new Set(snap.completedDeliveryIndices),
+    skippedDeliveryIndices: new Set(snap.skippedDeliveryIndices ?? []),
     speedKmh: typeof snap.speedKmh === 'number' && snap.speedKmh > 0 ? snap.speedKmh : 48,
     journeyCompleteOpen: snap.journeyCompleteOpen === true,
     sessionInitialDistanceAlong: snap.distanceAlong,
@@ -109,6 +113,9 @@ export function TruckConductorPanel({ camio, routeTabVisible = true, onReiniciSi
   const [deliveryFlow, setDeliveryFlow] = useState<DeliveryFlowState | null>(null)
   const [completedDeliveryIndices, setCompletedDeliveryIndices] = useState(
     (): ReadonlySet<number> => bootstrapConductorFromStorage(camio).completedDeliveryIndices,
+  )
+  const [skippedDeliveryIndices, setSkippedDeliveryIndices] = useState(
+    (): ReadonlySet<number> => bootstrapConductorFromStorage(camio).skippedDeliveryIndices,
   )
   const [journeyCompleteOpen, setJourneyCompleteOpen] = useState(
     () => bootstrapConductorFromStorage(camio).journeyCompleteOpen,
@@ -136,6 +143,7 @@ export function TruckConductorPanel({ camio, routeTabVisible = true, onReiniciSi
     driveMeta: null as typeof driveMeta,
     distanceAlong: 0,
     completedDeliveryIndices: new Set<number>() as ReadonlySet<number>,
+    skippedDeliveryIndices: new Set<number>() as ReadonlySet<number>,
     speedKmh: 48,
     journeyCompleteOpen: false,
   })
@@ -146,6 +154,7 @@ export function TruckConductorPanel({ camio, routeTabVisible = true, onReiniciSi
       driveMeta,
       distanceAlong,
       completedDeliveryIndices,
+      skippedDeliveryIndices,
       speedKmh,
       journeyCompleteOpen,
     }
@@ -155,6 +164,7 @@ export function TruckConductorPanel({ camio, routeTabVisible = true, onReiniciSi
     driveMeta,
     distanceAlong,
     completedDeliveryIndices,
+    skippedDeliveryIndices,
     speedKmh,
     journeyCompleteOpen,
   ])
@@ -163,7 +173,10 @@ export function TruckConductorPanel({ camio, routeTabVisible = true, onReiniciSi
     const p = persistRef.current
     if (p.rutaId == null || !p.driveMeta) return
     const iniciada =
-      p.completedDeliveryIndices.size > 0 || p.distanceAlong > 0 || p.journeyCompleteOpen
+      p.completedDeliveryIndices.size > 0 ||
+      p.skippedDeliveryIndices.size > 0 ||
+      p.distanceAlong > 0 ||
+      p.journeyCompleteOpen
     if (!iniciada) return
     if (!camio.plaCarrega || camio.liniesDistribucio === null) return
     const fp = fingerprintLiniesDistribucio(camio.liniesDistribucio)
@@ -197,6 +210,10 @@ export function TruckConductorPanel({ camio, routeTabVisible = true, onReiniciSi
     return Math.max(0, totalEntregues - fetes)
   }, [camio.ruta, completedDeliveryIndices])
 
+  const indicesEntregaReconegutsSimulacio = useMemo(() => {
+    return new Set([...completedDeliveryIndices, ...skippedDeliveryIndices])
+  }, [completedDeliveryIndices, skippedDeliveryIndices])
+
   useEffect(() => {
     const rutaId = camio.ruta?.id
     if (rutaId == null || !driveMeta) return
@@ -205,6 +222,7 @@ export function TruckConductorPanel({ camio, routeTabVisible = true, onReiniciSi
       saveConductorRouteSession(camio.codi, rutaId, {
         distanceAlong,
         completedDeliveryIndices: [...completedDeliveryIndices].sort((a, b) => a - b),
+        skippedDeliveryIndices: [...skippedDeliveryIndices].sort((a, b) => a - b),
         speedKmh,
         journeyCompleteOpen,
       })
@@ -218,6 +236,7 @@ export function TruckConductorPanel({ camio, routeTabVisible = true, onReiniciSi
     driveMeta,
     distanceAlong,
     completedDeliveryIndices,
+    skippedDeliveryIndices,
     speedKmh,
     journeyCompleteOpen,
     persistirPlaSiRouteIniciada,
@@ -230,6 +249,7 @@ export function TruckConductorPanel({ camio, routeTabVisible = true, onReiniciSi
       saveConductorRouteSession(p.codi, p.rutaId, {
         distanceAlong: p.distanceAlong,
         completedDeliveryIndices: [...p.completedDeliveryIndices].sort((a, b) => a - b),
+        skippedDeliveryIndices: [...p.skippedDeliveryIndices].sort((a, b) => a - b),
         speedKmh: p.speedKmh,
         journeyCompleteOpen: p.journeyCompleteOpen,
       })
@@ -283,8 +303,22 @@ export function TruckConductorPanel({ camio, routeTabVisible = true, onReiniciSi
 
   const completeDeliveryForIndex = useCallback((index: number) => {
     setCompletedDeliveryIndices((prev) => new Set([...prev, index]))
+    setSkippedDeliveryIndices((prev) => {
+      if (!prev.has(index)) return prev
+      const next = new Set(prev)
+      next.delete(index)
+      return next
+    })
     setDeliveryFlow(null)
   }, [])
+
+  /** Entrega no possible: es continua la ruta sense baixar mercaderia del pla del camió. */
+  const cancelDeliveryAtArrival = useCallback(() => {
+    if (!deliveryFlow || deliveryFlow.step !== 'arrival') return
+    const idx = deliveryFlow.payload.index
+    setSkippedDeliveryIndices((prev) => new Set([...prev, idx]))
+    setDeliveryFlow(null)
+  }, [deliveryFlow])
 
   const dismissJourneyComplete = useCallback(() => {
     setJourneyCompleteOpen(false)
@@ -304,6 +338,7 @@ export function TruckConductorPanel({ camio, routeTabVisible = true, onReiniciSi
     setDeliveryFlow(null)
     setJourneyCompleteOpen(false)
     setCompletedDeliveryIndices(new Set())
+    setSkippedDeliveryIndices(new Set())
     setSimPlaying(false)
     setSessionInitialDistanceAlong(undefined)
     userScrollPausedFollowRef.current = false
@@ -461,7 +496,7 @@ export function TruckConductorPanel({ camio, routeTabVisible = true, onReiniciSi
         <div className="overflow-hidden rounded-2xl border border-slate-200 bg-slate-50">
           {camio.ruta ? (
             <ConductorRouteMap
-              acknowledgedDeliveryIndices={completedDeliveryIndices}
+              acknowledgedDeliveryIndices={indicesEntregaReconegutsSimulacio}
               initialDistanceAlong={sessionInitialDistanceAlong}
               onDeliveryArrival={onDeliveryArrival}
               onDriveReady={onDriveReady}
@@ -515,6 +550,7 @@ export function TruckConductorPanel({ camio, routeTabVisible = true, onReiniciSi
                   completedDeliveryIndices={completedDeliveryIndices}
                   distanceAlong={distanceAlong}
                   parades={camio.ruta.parades}
+                  skippedDeliveryIndices={skippedDeliveryIndices}
                   stopDistances={driveMeta?.stopDistances ?? null}
                   totalPathMeters={driveMeta?.totalMeters ?? null}
                 />
@@ -606,11 +642,11 @@ export function TruckConductorPanel({ camio, routeTabVisible = true, onReiniciSi
       {deliveryFlow ? (
         <div
           aria-modal="true"
-          className="fixed inset-0 z-[2000] flex items-center justify-center bg-slate-900/50 p-4 backdrop-blur-[2px]"
+          className="fixed inset-0 z-[2000] flex items-center justify-center overflow-x-hidden overflow-y-auto bg-slate-900/50 p-4 backdrop-blur-[2px]"
           role="dialog"
         >
           {deliveryFlow.step === 'arrival' ? (
-            <div className="max-h-[min(92vh,900px)] w-full max-w-4xl overflow-y-auto rounded-2xl border border-slate-200 bg-white p-5 shadow-2xl sm:p-6">
+            <div className="max-h-[min(92vh,900px)] w-full min-w-0 max-w-5xl overflow-x-hidden overflow-y-auto rounded-2xl border border-slate-200 bg-white p-5 shadow-2xl sm:p-6">
               <h3 className="text-lg font-semibold text-slate-900">Entrega</h3>
               <p className="mt-2 text-sm leading-relaxed text-slate-600">
                 Has arribat al punt d’entrega:
@@ -620,14 +656,14 @@ export function TruckConductorPanel({ camio, routeTabVisible = true, onReiniciSi
                 La simulació de la ruta està en pausa fins que finalitzis la comanda.
               </p>
 
-              <div className="mt-5 grid gap-5 lg:grid-cols-[1.15fr_1fr] lg:items-stretch lg:gap-6">
-                <div className="flex min-h-0 flex-col">
+              <div className="mt-5 grid min-w-0 grid-cols-1 gap-5 lg:grid-cols-[minmax(0,1.55fr)_minmax(0,0.72fr)] lg:items-stretch lg:gap-5 xl:grid-cols-[minmax(0,1.62fr)_minmax(0,0.68fr)] xl:gap-6">
+                <div className="flex min-h-0 min-w-0 flex-col lg:min-w-0">
                   <p className="mb-2 text-xs font-semibold uppercase tracking-wide text-slate-600">
                     Disseny del camió (mercat en verd = aquesta parada)
                   </p>
-                  <div className="relative min-h-[200px] w-full overflow-hidden rounded-xl border border-slate-200 bg-[#ebe4d9] lg:min-h-[240px]">
+                  <div className="relative min-h-[220px] w-full overflow-hidden rounded-xl border border-slate-200 bg-[#ebe4d9] lg:min-h-[280px]">
                     {camio.plaCarrega ? (
-                      <div className="h-[min(42vh,260px)] min-h-[200px] w-full lg:h-[280px]">
+                      <div className="h-[min(46vh,300px)] min-h-[220px] w-full lg:h-[min(52vh,340px)] lg:min-h-[280px]">
                         <DistribuidoraCamioPla2D
                           compacte
                           encaixaSenseScroll
@@ -647,44 +683,57 @@ export function TruckConductorPanel({ camio, routeTabVisible = true, onReiniciSi
                   </div>
                 </div>
 
-                <div className="flex min-h-0 flex-col">
+                <div className="flex min-h-0 min-w-0 max-w-full flex-col lg:max-w-[min(100%,20rem)] xl:max-w-[min(100%,19rem)]">
                   {liniesModalEntrega.length > 0 ? (
-                    <div className="rounded-xl border border-slate-200 bg-slate-50 px-3 py-3">
-                      <p className="text-xs font-semibold uppercase tracking-wide text-slate-700">
+                    <div className="rounded-xl border border-slate-200 bg-slate-50 px-2.5 py-2.5">
+                      <p className="text-[11px] font-semibold uppercase tracking-wide text-slate-700">
                         Mercaderia a entregar aquí
                       </p>
-                      <ul className="mt-2 max-h-[min(40vh,280px)] space-y-2 overflow-y-auto text-sm text-slate-800 lg:max-h-[320px]">
+                      <ul className="mt-1.5 max-h-[min(36vh,240px)] space-y-1.5 overflow-y-auto text-xs leading-snug text-slate-800 lg:max-h-[260px]">
                         {liniesModalEntrega.map((l) => (
-                          <li className="border-b border-slate-200/80 pb-2 last:border-0 last:pb-0" key={l.producteId}>
+                          <li className="border-b border-slate-200/80 pb-1.5 last:border-0 last:pb-0" key={l.producteId}>
                             {resumLiniaEntregaModal(l)}
                           </li>
                         ))}
                       </ul>
                     </div>
                   ) : (
-                    <p className="rounded-xl border border-dashed border-slate-200 bg-slate-50 px-3 py-4 text-xs text-slate-500">
+                    <p className="rounded-xl border border-dashed border-slate-200 bg-slate-50 px-2.5 py-3 text-[11px] leading-snug text-slate-500">
                       Sense detall de productes per aquesta parada (comprova la connexió o les taules de la BD).
                     </p>
                   )}
-                  <p className="mt-3 text-xs text-slate-500">
+                  <p className="mt-2 text-[11px] leading-snug text-slate-500">
                     El camió romandrà aturat fins que confirmis la baixada de mercaderia.
                   </p>
                 </div>
               </div>
 
-              <button
-                className="mt-6 h-11 w-full rounded-xl bg-slate-900 text-sm font-semibold text-white transition hover:bg-slate-800"
-                onClick={() =>
-                  setDeliveryFlow({
-                    step: 'retornQuestion',
-                    index: deliveryFlow.payload.index,
-                    nom: deliveryFlow.payload.nom,
-                  })
-                }
-                type="button"
-              >
-                He finalitzat la comanda
-              </button>
+              <div className="mt-6 grid w-full min-w-0 grid-cols-1 gap-3 sm:grid-cols-[minmax(0,9.75rem)_minmax(0,1fr)] sm:items-stretch">
+                <button
+                  className="col-start-1 row-start-2 flex h-11 w-full min-w-0 items-center justify-center rounded-xl border border-slate-300 bg-white px-2.5 text-sm font-semibold leading-tight text-slate-800 transition hover:bg-slate-50 sm:row-start-1 sm:h-[3rem] sm:max-w-[9.75rem] sm:justify-center sm:px-2.5"
+                  onClick={cancelDeliveryAtArrival}
+                  type="button"
+                >
+                  Cancel·lar entrega
+                </button>
+                <button
+                  className="col-start-1 row-start-1 flex min-h-[3.25rem] w-full min-w-0 items-center justify-center rounded-xl bg-slate-900 px-4 text-base font-semibold leading-tight text-white transition hover:bg-slate-800 sm:col-start-2 sm:min-h-[3rem] sm:px-6"
+                  onClick={() =>
+                    setDeliveryFlow({
+                      step: 'retornQuestion',
+                      index: deliveryFlow.payload.index,
+                      nom: deliveryFlow.payload.nom,
+                    })
+                  }
+                  type="button"
+                >
+                  He finalitzat la comanda
+                </button>
+              </div>
+              <p className="mt-3 max-w-full break-words text-center text-xs leading-relaxed text-slate-500">
+                «Cancel·lar entrega» si no s’ha pogut baixar la mercaderia: la ruta continua i el que hi havia per
+                aquest punt roman al camió.
+              </p>
             </div>
           ) : null}
 

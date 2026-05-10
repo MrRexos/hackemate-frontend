@@ -5,6 +5,8 @@ export type ConductorRouteSession = {
   v: typeof STORAGE_VERSION
   distanceAlong: number
   completedDeliveryIndices: number[]
+  /** Parades on s’ha saltat l’entrega (no s’ha pogut baixar mercaderia); la simulació segueix. */
+  skippedDeliveryIndices?: number[]
   speedKmh: number
   journeyCompleteOpen: boolean
 }
@@ -25,7 +27,11 @@ export function loadConductorRouteSession(
     if (typeof parsed.distanceAlong !== 'number' || !Array.isArray(parsed.completedDeliveryIndices)) {
       return null
     }
-    return parsed
+    const skipped = parsed.skippedDeliveryIndices
+    return {
+      ...parsed,
+      skippedDeliveryIndices: Array.isArray(skipped) ? skipped : [],
+    }
   } catch {
     return null
   }
@@ -37,7 +43,11 @@ export function saveConductorRouteSession(
   session: Omit<ConductorRouteSession, 'v'>,
 ): void {
   try {
-    const payload: ConductorRouteSession = { v: STORAGE_VERSION, ...session }
+    const payload: ConductorRouteSession = {
+      v: STORAGE_VERSION,
+      ...session,
+      skippedDeliveryIndices: [...(session.skippedDeliveryIndices ?? [])].sort((a, b) => a - b),
+    }
     sessionStorage.setItem(storageKey(codi, rutaId), JSON.stringify(payload))
   } catch {
     // Quota o mode privat: ignorar
