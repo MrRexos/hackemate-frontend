@@ -2,8 +2,11 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 
 import { ConductorRouteMap } from '@/components/truck/ConductorRouteMap'
 import { RouteStopsTimeline } from '@/components/truck/RouteStopsTimeline'
+import type { LiniaDistribucio } from '@/domain/palletPacking'
 import type { Camio } from '@/models/Camio'
+import { fetchLiniesDistribucioAmbOrigen } from '@/services/distribucioApi'
 import type { DeliveryArrivalPayload } from '@/utils/driveSimulation'
+import { resumLiniaEntregaModal } from '@/utils/formatDistribucio'
 import { esParadaMagatzem } from '@/utils/paradaMap'
 import { timelineScrollLeadIndex } from '@/utils/routePathDrive'
 
@@ -40,6 +43,9 @@ export function TruckConductorPanel({ camio }: Props) {
   const [simPlaying, setSimPlaying] = useState(false)
   const [simControlsOpen, setSimControlsOpen] = useState(false)
 
+  const [liniesDistribucio, setLiniesDistribucio] = useState<LiniaDistribucio[] | null>(null)
+  const [distribucioError, setDistribucioError] = useState<string | null>(null)
+
   const stopsScrollRef = useRef<HTMLDivElement>(null)
   const programmaticScrollRef = useRef(false)
   const programmaticScrollTimerRef = useRef<ReturnType<typeof window.setTimeout> | null>(null)
@@ -69,6 +75,44 @@ export function TruckConductorPanel({ camio }: Props) {
     }
     return Math.max(0, totalEntregues - fetes)
   }, [camio.ruta, completedDeliveryIndices])
+
+  useEffect(() => {
+    const r = camio.ruta
+    if (!r) {
+      setLiniesDistribucio(null)
+      setDistribucioError(null)
+      return
+    }
+    let cancelled = false
+    setLiniesDistribucio(null)
+    setDistribucioError(null)
+    void (async () => {
+      try {
+        const { linies } = await fetchLiniesDistribucioAmbOrigen(
+          r.id,
+          r.parades.length,
+          r.transporteId ?? null,
+          r.ordreEntregues ?? null,
+        )
+        if (!cancelled) {
+          setLiniesDistribucio(linies)
+        }
+      } catch (e: unknown) {
+        if (!cancelled) {
+          setDistribucioError(e instanceof Error ? e.message : 'No s’han pogut carregar les línies.')
+          setLiniesDistribucio([])
+        }
+      }
+    })()
+    return () => {
+      cancelled = true
+    }
+  }, [camio.ruta])
+
+  const liniesModalEntrega = useMemo(() => {
+    if (!deliveryModal || !liniesDistribucio?.length) return []
+    return liniesDistribucio.filter((l) => l.paradaIndex === deliveryModal.index)
+  }, [deliveryModal, liniesDistribucio])
 
   const clearProgrammaticTimer = useCallback(() => {
     if (programmaticScrollTimerRef.current != null) {
@@ -287,10 +331,15 @@ export function TruckConductorPanel({ camio }: Props) {
           <div className="shrink-0 border-b border-slate-200/70 px-4 py-3">
             <h3 className="text-xs font-bold uppercase tracking-wide text-slate-800">Punts d&apos;entrega</h3>
             {camio.ruta ? (
-              <p className="mt-1 text-sm text-slate-600">
-                <span className="tabular-nums font-medium text-slate-800">{entreguesPendents}</span>{' '}
-                {entreguesPendents === 1 ? 'entrega pendent' : 'entregues pendents'}
-              </p>
+              <>
+                <p className="mt-1 text-sm text-slate-600">
+                  <span className="tabular-nums font-medium text-slate-800">{entreguesPendents}</span>{' '}
+                  {entreguesPendents === 1 ? 'entrega pendent' : 'entregues pendents'}
+                </p>
+                {distribucioError ? (
+                  <p className="mt-1 text-xs text-amber-800">{distribucioError}</p>
+                ) : null}
+              </>
             ) : null}
           </div>
 
@@ -414,6 +463,22 @@ export function TruckConductorPanel({ camio }: Props) {
               Has arribat al punt d’entrega:
               <span className="mt-1 block font-semibold text-slate-900">{deliveryModal.nom}</span>
             </p>
+            {liniesModalEntrega.length > 0 ? (
+              <div className="mt-4 rounded-xl border border-slate-200 bg-slate-50 px-3 py-3">
+                <p className="text-xs font-semibold uppercase tracking-wide text-slate-700">Mercaderia a entregar</p>
+                <ul className="mt-2 max-h-52 space-y-2 overflow-y-auto text-sm text-slate-800">
+                  {liniesModalEntrega.map((l) => (
+                    <li className="border-b border-slate-200/80 pb-2 last:border-0 last:pb-0" key={l.producteId}>
+                      {resumLiniaEntregaModal(l)}
+                    </li>
+                  ))}
+                </ul>
+              </div>
+            ) : (
+              <p className="mt-3 text-xs text-slate-500">
+                Sense detall de productes per aquesta parada (comprova la connexió o les taules de la BD).
+              </p>
+            )}
             <p className="mt-2 text-xs text-slate-500">
               El camió romandrà aturat fins que confirmis la baixada de mercaderia.
             </p>
