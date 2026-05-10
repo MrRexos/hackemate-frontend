@@ -5,13 +5,13 @@ import { assignarRutesACamionsDesExcel, type ResultatAssignacio } from './assign
 import { carregarRutesILiniesDesExcel, type ExcelRutesDocument } from './excelRutesFleet'
 
 /**
- * Carrega el document de rutes (Excel → JSON): URL explícita, després `public/excel-rutes.json`,
- * després el JSON empaquetat a `src/data/excel-rutes.json`.
+ * Carrega el document de rutes (Excel → JSON) des del mateix frontend:
+ * `excel-rutes.json` (arrel del projecte), després `public/excel-rutes.json`,
+ * i finalment el JSON empaquetat a `src/data/excel-rutes.json`.
  */
 export async function carregarDocumentRutesFleet(): Promise<ExcelRutesDocument> {
   const urls: string[] = []
-  const envUrl = import.meta.env.VITE_FLEET_RUTES_URL?.trim()
-  if (envUrl) urls.push(envUrl)
+  urls.push('./excel-rutes.json')
 
   const baseRaw = import.meta.env.BASE_URL ?? '/'
   const base = baseRaw.endsWith('/') ? baseRaw : `${baseRaw}/`
