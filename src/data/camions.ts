@@ -1,7 +1,7 @@
 import { Camio, TipusCamio } from '../models/Camio'
 import { FLEET_EXCEL_CAMIO_ALIASES } from './fleetExcelCamioAliases'
 import { getInternalCamioCodeFromExcel } from './camioLookupRegistry'
-
+/**hola*/ 
 export const camions: Camio[] = [
   new Camio('A1B2C3D', TipusCamio.Mitja),
   new Camio('E4F5G6H', TipusCamio.Mitja),
