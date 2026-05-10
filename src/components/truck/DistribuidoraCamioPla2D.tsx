@@ -1,10 +1,14 @@
 /* eslint-disable react-refresh/only-export-components -- graellaPalets i catCarrega: helpers compartits amb altres vistes */
-import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react'
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 
 import truckImg from '@/assets/img/truck_top.png'
 import { buttonCn } from '@/components/ui/Button'
+import { cn } from '@/utils/cn'
 import {
+  BARRILS_MAX_PER_PIS,
   CAIXES_PER_PALLET,
+  FORAT_ALINEACIO_CAIXES,
+  VOLUM_CAIXES_EQ_MAX_PER_PIS,
   densitatKgPerCaixaEq,
   paletsMaximsPerTipus,
 } from '@/domain/palletPacking'
@@ -108,6 +112,84 @@ const CAT_COLOR: Record<CatCarrega, string> = {
 }
 const CAT_LABEL: Record<CatCarrega, string> = {
   caja: 'Caja', barril: 'Barril', lata: 'Lata', retornable: 'Retornable', otros: 'Otros',
+}
+
+/**
+ * Model 3D del palet: 3 d’amplada × 4 de fondària × 5 pisos = 60 cel·les (= capacitat d’1 palet).
+ * Cada cel·la = 1 caixa equivalent (un barril = 4 cel·les, com a `volumCaixes` del fragment).
+ */
+const PALLET3D_AMPLADA = 3
+const PALLET3D_FONDARIA = 4
+const PALLET3D_PISOS = 5
+const MOSAIC_CELLS = PALLET3D_AMPLADA * PALLET3D_FONDARIA * PALLET3D_PISOS
+const CELLES_PER_PIS = PALLET3D_AMPLADA * PALLET3D_FONDARIA
+
+/**
+ * Nombre de cel·les per fragment = volum en caixes eq. (arrodonit). Un barril amb `volumCaixes` 4 → 4 cel·les.
+ * Si l’arrodoniment supera la capacitat del palet, s’escala proporcionalment (cas desbordament).
+ */
+function celulesPerFragmentFidelAlVolum(volums: readonly number[], capacitatMax: number): number[] {
+  const n = volums.length
+  if (n === 0 || capacitatMax <= 0) return []
+
+  const rounded = volums.map((v) => {
+    const x = Math.max(0, Number(v))
+    return Number.isFinite(x) ? Math.round(x) : 0
+  })
+  const sumArr = rounded.reduce((a, b) => a + b, 0)
+  if (sumArr <= capacitatMax) return rounded
+
+  const sumRaw =
+    volums.reduce((a, b) => a + (Number.isFinite(Number(b)) && Number(b) > 0 ? Number(b) : 0), 0) || 1
+  const ideal = volums.map((v) => {
+    const x = Number.isFinite(Number(v)) && Number(v) > 0 ? Number(v) : 0
+    return (x / sumRaw) * capacitatMax
+  })
+  const fl = ideal.map((x) => Math.floor(x))
+  const cells = [...fl]
+  let deficit = capacitatMax - cells.reduce((a, b) => a + b, 0)
+  const byRem = ideal.map((x, i) => ({ i, rem: x - fl[i]! })).sort((a, b) => b.rem - a.rem)
+  for (let k = 0; k < deficit; k++) cells[byRem[k % byRem.length]!.i]!++
+
+  for (let i = 0; i < n; i++) {
+    if (volums[i]! > 0 && cells[i] === 0) {
+      const donor = cells.indexOf(Math.max(...cells))
+      if (donor >= 0 && cells[donor]! > 1) {
+        cells[donor]!--
+        cells[i]!++
+      }
+    }
+  }
+  return cells
+}
+
+/**
+ * Omple el palet en 3D: pis 0 = base (primer omplert); dins de cada pis, files 0→3, columnes 0→2.
+ * Retorna `pisosDesDeBase[pis][fila][col]` → índex de fragment o null.
+ */
+function construirPalet3DPisos(
+  frags: readonly FragmentPalet[],
+  counts: readonly number[],
+): (number | null)[][][] {
+  const seq: number[] = []
+  for (let fi = 0; fi < frags.length; fi++) {
+    const c = counts[fi] ?? 0
+    for (let j = 0; j < c; j++) seq.push(fi)
+  }
+
+  const pisos: (number | null)[][][] = Array.from({ length: PALLET3D_PISOS }, () =>
+    Array.from({ length: PALLET3D_FONDARIA }, () => Array(PALLET3D_AMPLADA).fill(null)),
+  )
+
+  for (let k = 0; k < seq.length; k++) {
+    const pis = Math.floor(k / CELLES_PER_PIS)
+    if (pis >= PALLET3D_PISOS) break
+    const dins = k % CELLES_PER_PIS
+    const fila = Math.floor(dins / PALLET3D_AMPLADA)
+    const col = dins % PALLET3D_AMPLADA
+    pisos[pis]![fila]![col] = seq[k]!
+  }
+  return pisos
 }
 
 /* ─── Cel·la palet ───────────────────────────────────────────────────────── */
@@ -239,6 +321,7 @@ function ModalDetall({
   paradesCompletades?: ReadonlySet<number>
 }) {
   const [fragmentResaltatIndex, setFragmentResaltatIndex] = useState<number | null>(null)
+  const [pisTab, setPisTab] = useState(0)
 
   useEffect(() => {
     const fn = (e: KeyboardEvent) => { if (e.key === 'Escape') onTancar() }
@@ -246,8 +329,24 @@ function ModalDetall({
     return () => window.removeEventListener('keydown', fn)
   }, [onTancar])
 
+  useEffect(() => {
+    setPisTab(0)
+    setFragmentResaltatIndex(null)
+  }, [palet.index])
+
   const totsFrags = palet.fragments.filter((f) => !paradesCompletades?.has(f.paradaIndex))
-  const sumRel = totsFrags.reduce((s, f) => s + Math.max(0.05, f.volumCaixes / CAIXES_PER_PALLET), 0) || 1
+
+  const tePlanPisos =
+    palet.planPisos != null && palet.planPisos.length === PALLET3D_PISOS
+
+  const graellaMosaicLegacy = useMemo(() => {
+    const frags = palet.fragments.filter((f) => !paradesCompletades?.has(f.paradaIndex))
+    if (frags.length === 0) return null
+    if (palet.planPisos != null && palet.planPisos.length === PALLET3D_PISOS) return null
+    const vols = frags.map((f) => f.volumCaixes)
+    const counts = celulesPerFragmentFidelAlVolum(vols, MOSAIC_CELLS)
+    return { pisos: construirPalet3DPisos(frags, counts), frags }
+  }, [palet.fragments, palet.index, palet.planPisos, paradesCompletades])
 
   const filaModalDescarrega =
     paradaEntregaIndex !== undefined
@@ -279,65 +378,267 @@ function ModalDetall({
             Tancar
           </button>
         </div>
-        <div className="mt-4 grid grid-cols-[260px_1fr] gap-4">
-          <div className="flex h-[min(52vh,380px)] flex-col gap-1 sm:h-[360px]">
+        <div className="mt-4 grid grid-cols-[280px_1fr] gap-4">
+          <div className="flex flex-col gap-2">
             <p className="shrink-0 text-center text-[0.68rem] font-medium leading-snug text-sky-900">
-              ↑ Dalt de la pila{' '}
-              <span className="font-normal text-slate-500">(lleuger — menys kg per caixa equivalent)</span>
-            </p>
-            <div className="min-h-0 flex flex-1 flex-col rounded border border-slate-200 bg-slate-50 p-2">
-              {totsFrags.length === 0 ? (
-                <p className="text-sm text-slate-500">Sense càrrega en aquest palet.</p>
+              {tePlanPisos ? (
+                <>
+                  Prioritat barrils: {BARRILS_MAX_PER_PIS} ranures / pis · després caixes al volum que sobra
+                  <span className="mt-0.5 block font-normal text-slate-500">
+                    Es divideix el pis en 6 posicions de barril; un cop col·locats, les caixes van al marge restant
+                    (fins {VOLUM_CAIXES_EQ_MAX_PER_PIS} caixes eq. totals / pis, barrils + caixes). 1 barril = 4
+                    caixes eq. al camió; vertical +2/+2 al tall de dos pisos; tombat +2 només al pis 5.
+                  </span>
+                  <span className="mt-0.5 block font-normal text-slate-500">
+                    Caixes: ~{Math.round((1 - FORAT_ALINEACIO_CAIXES) * 100)}% del buit usable es perd per no
+                    alinear amb els barrils.
+                  </span>
+                </>
               ) : (
-                <div className="flex min-h-0 flex-1 flex-col gap-[3px]">
-                  {fragmentsPerVistaPilaDesDeDalt(totsFrags).map((f, i) => {
-                    const cat = catCarrega(f)
-                    const partRel = Math.max(0.05, f.volumCaixes / CAIXES_PER_PALLET) / sumRel
-                    const descarregarAqui =
-                      paradaEntregaIndex !== undefined && f.paradaIndex === paradaEntregaIndex
-                    const d = densitatKgPerCaixaEq(f)
-                    const idxTots = totsFrags.indexOf(f)
-                    const esResaltat = fragmentResaltatIndex !== null && fragmentResaltatIndex === idxTots
-                    const altresApagats =
-                      fragmentResaltatIndex !== null && fragmentResaltatIndex !== idxTots
-                    return (
-                      <div
-                        key={`pila-${palet.index}-${i}`}
-                        className={`relative min-h-[8px] cursor-pointer rounded-[3px] transition-all duration-150 ${
-                          paradaEntregaIndex !== undefined && !descarregarAqui ? 'opacity-[0.38]' : ''
-                        } ${descarregarAqui ? 'ring-2 ring-emerald-600 ring-offset-1' : ''} ${
-                          altresApagats ? '!opacity-[0.28]' : ''
-                        } ${esResaltat ? 'z-[8] scale-[1.03] shadow-lg ring-[3px] ring-slate-900 ring-offset-2 !opacity-100' : ''}`}
-                        style={{
-                          flexGrow: partRel,
-                          flexShrink: 1,
-                          flexBasis: 0,
-                          background: CAT_COLOR[cat],
-                        }}
-                        title={`~${d.toFixed(1)} kg/caixa eq.`}
-                        onMouseEnter={() => setFragmentResaltatIndex(idxTots)}
-                        onMouseLeave={() => setFragmentResaltatIndex(null)}
-                      >
-                        {descarregarAqui ? (
-                          <span className="pointer-events-none absolute left-1 top-1 z-[1] rounded bg-emerald-700 px-1 py-0.5 text-[0.55rem] font-bold uppercase leading-none text-white shadow-sm">
-                            Descarregar
-                          </span>
-                        ) : null}
-                        {cat === 'barril' && (
-                          <div className="pointer-events-none absolute inset-0 flex items-center justify-center">
-                            <div className="h-[72%] aspect-square rounded-full border border-white/35 bg-black/10" />
-                          </div>
-                        )}
-                      </div>
-                    )
-                  })}
-                </div>
+                <>
+                  Planta {PALLET3D_AMPLADA}×{PALLET3D_FONDARIA} · {PALLET3D_PISOS} pisos (vista heretada)
+                  <span className="mt-0.5 block font-normal text-slate-500">
+                    Sense pla per pis guardat: graella per volum de fragments.
+                  </span>
+                </>
               )}
-            </div>
-            <p className="shrink-0 border-t border-amber-900/25 pt-1 text-center text-[0.68rem] font-semibold leading-snug text-amber-950">
-              ↓ Base del palet{' '}
-              <span className="font-normal text-slate-600">(més pesat per caixa — inclòs barrils densos)</span>
             </p>
+            <p className="text-center text-[0.7rem] font-semibold tabular-nums text-slate-800">
+              Ocupació del palet: {Math.round(palet.ocupatCaixes)} / {CAIXES_PER_PALLET} caixes eq.
+            </p>
+            {totsFrags.length === 0 ? (
+              <div className="rounded border border-slate-200 bg-[#F5ECD8] p-4">
+                <p className="text-sm text-slate-500">Sense càrrega en aquest palet.</p>
+              </div>
+            ) : tePlanPisos ? (
+              <div className="flex flex-col gap-2 rounded border border-slate-200 bg-[#F5ECD8] p-2">
+                <div
+                  className="flex flex-wrap justify-center gap-1"
+                  role="tablist"
+                  aria-label="Pisos del palet"
+                >
+                  {Array.from({ length: PALLET3D_PISOS }, (_, pisDesDeBase) => (
+                    <button
+                      className={cn(
+                        'rounded-full px-2.5 py-1 text-[0.62rem] font-semibold transition-colors',
+                        pisTab === pisDesDeBase
+                          ? 'bg-slate-900 text-white shadow-sm'
+                          : 'bg-white/80 text-slate-700 ring-1 ring-slate-300/80 hover:bg-white',
+                      )}
+                      key={pisDesDeBase}
+                      role="tab"
+                      type="button"
+                      aria-selected={pisTab === pisDesDeBase}
+                      onClick={() => setPisTab(pisDesDeBase)}
+                    >
+                      Pis {pisDesDeBase + 1}
+                      {pisDesDeBase === 0 ? ' · base' : pisDesDeBase === PALLET3D_PISOS - 1 ? ' · dalt' : ''}
+                    </button>
+                  ))}
+                </div>
+                {(() => {
+                  const pisDesDeBase = pisTab
+                  const pla = palet.planPisos![pisDesDeBase]!
+                  const colorBarril = CAT_COLOR.barril
+                  const colorCaixa = CAT_COLOR.caja
+                  const nCaixesVisual = Math.min(
+                    CELLES_PER_PIS,
+                    Math.max(0, Math.round(pla.ocupacioCaixes)),
+                  )
+                  return (
+                    <div className="flex flex-col items-center gap-2 pt-1">
+                      <p className="text-center text-[0.62rem] text-slate-600">
+                        {pisDesDeBase === 0
+                          ? 'Base — primer omplert'
+                          : pisDesDeBase === PALLET3D_PISOS - 1
+                            ? 'Pis superior (tombat si cal)'
+                            : 'Pis intermedi'}
+                      </p>
+                      <p className="text-center text-[0.6rem] tabular-nums text-slate-700">
+                        Volum barrils en aquest pis: {pla.volumBarrilsCaixesEq} / {VOLUM_CAIXES_EQ_MAX_PER_PIS}{' '}
+                        caixes eq. · Ranures: {pla.barrilsQueTocquen} / {BARRILS_MAX_PER_PIS}
+                      </p>
+                      <p className="text-center text-[0.58rem] text-slate-600">
+                        Marge teòric per caixes (abans forat):{' '}
+                        {Math.max(0, VOLUM_CAIXES_EQ_MAX_PER_PIS - pla.volumBarrilsCaixesEq).toFixed(1)} caixes eq.
+                      </p>
+                      <div className="w-full max-w-[220px] space-y-2">
+                        <p className="text-center text-[0.58rem] font-semibold uppercase tracking-wide text-slate-600">
+                          Barrils (6 ranures)
+                        </p>
+                        <div className="grid grid-cols-6 gap-1">
+                          {Array.from({ length: BARRILS_MAX_PER_PIS }, (__, i) => {
+                            const ple = i < pla.barrilsQueTocquen
+                            return (
+                              <div
+                                aria-label={ple ? `Ranura barril ${i + 1} ocupada` : `Ranura barril ${i + 1} buida`}
+                                className={`flex aspect-square items-center justify-center rounded-md border border-black/15 ${
+                                  ple ? '' : 'bg-[#D4C4A8]/60'
+                                }`}
+                                key={`br-${pisDesDeBase}-${i}`}
+                                style={{
+                                  background: ple ? colorBarril : undefined,
+                                  opacity: ple ? 0.9 : 0.55,
+                                }}
+                              >
+                                {ple ? (
+                                  <span className="aspect-square w-[55%] rounded-full border border-white/35 bg-black/10" />
+                                ) : null}
+                              </div>
+                            )
+                          })}
+                        </div>
+                        <p className="text-center text-[0.58rem] font-semibold uppercase tracking-wide text-slate-600">
+                          Caixes / llaunes (3×4, sense coincidir 1:1 amb barrils)
+                        </p>
+                        <div
+                          className="grid aspect-[3/4] w-full gap-0.5 rounded border border-[#7A4820]/40 bg-[#E8DCC4] p-1 shadow-inner"
+                          style={{
+                            gridTemplateColumns: `repeat(${PALLET3D_AMPLADA}, minmax(0, 1fr))`,
+                            gridTemplateRows: `repeat(${PALLET3D_FONDARIA}, minmax(0, 1fr))`,
+                          }}
+                        >
+                          {Array.from({ length: CELLES_PER_PIS }, (_, k) => {
+                            const ple = k < nCaixesVisual
+                            return (
+                              <div
+                                aria-hidden
+                                className="min-h-0 min-w-0 rounded-[2px] border border-black/10"
+                                key={`cx-${palet.index}-p${pisDesDeBase}-${k}`}
+                                style={{
+                                  background: ple ? colorCaixa : '#D4C4A8',
+                                  opacity: ple ? 0.88 : 0.45,
+                                }}
+                              />
+                            )
+                          })}
+                        </div>
+                        <p className="text-center text-[0.58rem] text-slate-600">
+                          Caixes assignades al pis (aprox.): {pla.ocupacioCaixes.toFixed(1)} caixes eq.
+                        </p>
+                      </div>
+                    </div>
+                  )
+                })()}
+              </div>
+            ) : graellaMosaicLegacy ? (
+              <div className="flex flex-col gap-2 rounded border border-slate-200 bg-[#F5ECD8] p-2">
+                <div
+                  className="flex flex-wrap justify-center gap-1"
+                  role="tablist"
+                  aria-label="Pisos del palet"
+                >
+                  {Array.from({ length: PALLET3D_PISOS }, (_, pisDesDeBase) => (
+                    <button
+                      className={cn(
+                        'rounded-full px-2.5 py-1 text-[0.62rem] font-semibold transition-colors',
+                        pisTab === pisDesDeBase
+                          ? 'bg-slate-900 text-white shadow-sm'
+                          : 'bg-white/80 text-slate-700 ring-1 ring-slate-300/80 hover:bg-white',
+                      )}
+                      key={pisDesDeBase}
+                      role="tab"
+                      type="button"
+                      aria-selected={pisTab === pisDesDeBase}
+                      onClick={() => setPisTab(pisDesDeBase)}
+                    >
+                      Pis {pisDesDeBase + 1}
+                      {pisDesDeBase === 0 ? ' · base' : pisDesDeBase === PALLET3D_PISOS - 1 ? ' · dalt' : ''}
+                    </button>
+                  ))}
+                </div>
+                {(() => {
+                  const pisDesDeBase = pisTab
+                  const planta = graellaMosaicLegacy.pisos[pisDesDeBase]!
+                  const nEtiqueta = pisDesDeBase + 1
+                  return (
+                    <div className="flex flex-col items-center gap-1.5 pt-1">
+                      <p className="text-center text-[0.62rem] text-slate-600">
+                        {pisDesDeBase === 0
+                          ? 'Apoiat al terra del camió — primer omplert'
+                          : pisDesDeBase === PALLET3D_PISOS - 1
+                            ? 'Part alta de la pila'
+                            : 'Pis intermedi'}
+                      </p>
+                      <div className="mx-auto w-full max-w-[200px]">
+                        <div
+                          className="grid aspect-[3/4] w-full gap-0.5 rounded border border-[#7A4820]/40 bg-[#E8DCC4] p-1 shadow-inner"
+                          style={{
+                            gridTemplateColumns: `repeat(${PALLET3D_AMPLADA}, minmax(0, 1fr))`,
+                            gridTemplateRows: `repeat(${PALLET3D_FONDARIA}, minmax(0, 1fr))`,
+                          }}
+                        >
+                          {planta.flatMap((fila, r) =>
+                            fila.map((fragIdx, c) => {
+                              const buit = fragIdx === null
+                              const f =
+                                fragIdx !== null ? graellaMosaicLegacy.frags[fragIdx] ?? null : null
+                              const cat = f ? catCarrega(f) : null
+                              const color = f && cat ? CAT_COLOR[cat] : '#D4C4A8'
+                              const descarregarAqui =
+                                f != null &&
+                                paradaEntregaIndex !== undefined &&
+                                f.paradaIndex === paradaEntregaIndex
+                              const idxTots = fragIdx ?? -1
+                              const esResaltat =
+                                fragIdx !== null &&
+                                fragmentResaltatIndex !== null &&
+                                fragmentResaltatIndex === idxTots
+                              const altresApagats =
+                                !buit &&
+                                fragmentResaltatIndex !== null &&
+                                fragmentResaltatIndex !== idxTots
+                              const d = f ? densitatKgPerCaixaEq(f) : 0
+                              const title = f
+                                ? `${nomProducteVisible(f)} · pis ${nEtiqueta} · ~${d.toFixed(1)} kg/caixa eq.`
+                                : 'Buit'
+                              return (
+                                <button
+                                  aria-label={title}
+                                  className={`relative min-h-0 min-w-0 rounded-[2px] border border-black/10 outline-none transition-all ${
+                                    buit
+                                      ? 'cursor-default bg-[#D4C4A8]/70'
+                                      : 'cursor-pointer hover:brightness-105'
+                                  } ${
+                                    !buit && paradaEntregaIndex !== undefined && !descarregarAqui
+                                      ? 'opacity-[0.42]'
+                                      : ''
+                                  } ${
+                                    !buit && descarregarAqui
+                                      ? 'ring-1 ring-emerald-600 ring-offset-0'
+                                      : ''
+                                  } ${altresApagats ? '!opacity-[0.32]' : ''} ${
+                                    esResaltat
+                                      ? 'z-[8] scale-110 shadow-md ring-2 ring-slate-900 !opacity-100'
+                                      : ''
+                                  }`}
+                                  disabled={buit}
+                                  key={`mos-${palet.index}-p${pisDesDeBase}-${r}-${c}`}
+                                  style={{
+                                    background: color,
+                                    opacity: buit ? 0.55 : 0.92,
+                                  }}
+                                  title={title}
+                                  type="button"
+                                  onMouseEnter={() => !buit && setFragmentResaltatIndex(idxTots)}
+                                  onMouseLeave={() => setFragmentResaltatIndex(null)}
+                                >
+                                  {f && cat === 'barril' ? (
+                                    <span className="pointer-events-none absolute inset-0 m-px flex items-center justify-center">
+                                      <span className="aspect-square h-[55%] max-h-full rounded-full border border-white/30 bg-black/10" />
+                                    </span>
+                                  ) : null}
+                                </button>
+                              )
+                            }),
+                          )}
+                        </div>
+                      </div>
+                    </div>
+                  )
+                })()}
+              </div>
+            ) : null}
           </div>
 
           <div className="max-h-[min(52vh,380px)] space-y-3 overflow-y-auto pr-1">

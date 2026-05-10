@@ -1,8 +1,18 @@
-export { CAIXES_PER_PALLET, CAIXES_PER_BARRIL, LLAUNES_PER_CAIXA, paletsMaximsPerTipus } from './constants'
+export {
+  BARRILS_MAX_PER_PIS,
+  CAIXES_PER_PALLET,
+  CAIXES_PER_BARRIL,
+  FORAT_ALINEACIO_CAIXES,
+  LLAUNES_PER_CAIXA,
+  PALLET_VERTICAL_PISOS,
+  paletsMaximsPerTipus,
+  VOLUM_CAIXES_EQ_MAX_PER_PIS,
+} from './constants'
 export type {
   FragmentPalet,
   LiniaDistribucio,
   PaletOmplert,
+  PisPlaEmmagatzematge,
   PlaCarrega,
   UnitatVolum,
 } from './types'

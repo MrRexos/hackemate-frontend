@@ -3,8 +3,14 @@ import type { ParadaRuta } from '@/models/Ruta'
 import { pesCaixaMaterialSiExisteix } from '@/data/materialsPesCaixa'
 import { esParadaMagatzem } from '@/utils/paradaMap'
 
+import {
+  afegirCaixesDistribuïdes,
+  espaiTotalDistribuibleCaixes,
+  pisosBuides,
+  reservarFinsNBarrils,
+} from './barrilsEmmagatzematgePalet'
 import { compararFragmentPerBasePrimer } from './densitatFragment'
-import { CAIXES_PER_PALLET, paletsMaximsPerTipus } from './constants'
+import { CAIXES_PER_BARRIL, CAIXES_PER_PALLET, paletsMaximsPerTipus } from './constants'
 import type { FragmentPalet, LiniaDistribucio, PaletOmplert, PlaCarrega } from './types'
 import { quantitatFisicaDesDeVolumCaixes, volumEnCaixes } from './volum'
 
@@ -45,6 +51,9 @@ export function indicesPaletsOmplimentDesDeCabina(nPalets: number): number[] {
  * - Ordre d’ompliment dels palets: primer el més proper a la cabina, el segon de la fila, després el parell següent…
  *   Si un palet no té prou espai, es continua al següent (sense tornar enrere).
  * - Dins cada palet, fragments ordenats per densitat (kg/caixa): més dens a la base de la pila.
+ * - **Barrils primer**: 6 ranures màx. per pis; vertical 2+2 caixes eq. al tall de dos pisos; tombat +2 al pis 5.
+ *   Volum total camió: 4 caixes eq. per barril.
+ * - **Caixes / llaunes**: només el volum que sobra per pis (≤12 caixes eq./pis totals), amb forat d’alineació.
  */
 export function planificarCarregaPalets(
   parades: readonly ParadaRuta[],
@@ -58,6 +67,8 @@ export function planificarCarregaPalets(
     ocupatCaixes: 0,
     fragments: [],
   }))
+
+  const estatPisPerPalet = Array.from({ length: nPalets }, () => pisosBuides())
 
   const n = parades.length
   if (n < 3) {
@@ -94,6 +105,7 @@ export function planificarCarregaPalets(
     for (const linia of grup) {
       let restVol = linia.volumTotalCaixes
       const pesPerCaixa = linia.volumTotalCaixes > EPS ? linia.pesTotalKg / linia.volumTotalCaixes : 0
+      const esBarril = linia.unitat === 'BARRIL'
 
       while (restVol > EPS) {
         if (p < 0) {
@@ -107,7 +119,40 @@ export function planificarCarregaPalets(
           continue
         }
 
-        const hiCap = Math.min(restVol, espai)
+        let hiCap: number
+
+        if (esBarril) {
+          const barrilsQueCabenVolum = Math.min(
+            Math.floor((restVol + EPS) / CAIXES_PER_BARRIL),
+            Math.floor((espai + EPS) / CAIXES_PER_BARRIL),
+          )
+          if (barrilsQueCabenVolum <= 0) {
+            p--
+            continue
+          }
+          const estatPis = estatPisPerPalet[p]!
+          const nReservats = reservarFinsNBarrils(estatPis, barrilsQueCabenVolum)
+          if (nReservats <= 0) {
+            p--
+            continue
+          }
+          hiCap = nReservats * CAIXES_PER_BARRIL
+        } else {
+          const estatPis = estatPisPerPalet[p]!
+          const distribuible = espaiTotalDistribuibleCaixes(estatPis)
+          const hiCapDesitjat = Math.min(restVol, espai, distribuible)
+          if (hiCapDesitjat <= EPS) {
+            p--
+            continue
+          }
+          const hiCapReal = afegirCaixesDistribuïdes(estatPis, hiCapDesitjat)
+          if (hiCapReal <= EPS) {
+            p--
+            continue
+          }
+          hiCap = hiCapReal
+        }
+
         const pesTros = hiCap * pesPerCaixa
 
         const frag: FragmentPalet = {
@@ -139,6 +184,10 @@ export function planificarCarregaPalets(
   for (const palet of palets) {
     if (palet.fragments.length <= 1) continue
     palet.fragments.sort(compararFragmentPerBasePrimer)
+  }
+
+  for (let i = 0; i < nPalets; i++) {
+    palets[i]!.planPisos = estatPisPerPalet[i]!.map((x) => ({ ...x }))
   }
 
   return {

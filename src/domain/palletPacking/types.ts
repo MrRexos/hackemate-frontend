@@ -19,6 +19,13 @@ export type LiniaDistribucio = {
   empresaNom?: string
 }
 
+/** Plànol d’emmagatzematge per pis (5 pisos), després de planificar. */
+export type PisPlaEmmagatzematge = {
+  barrilsQueTocquen: number
+  volumBarrilsCaixesEq: number
+  ocupacioCaixes: number
+}
+
 /** Fragment col·locat en un palet (pot ser part d’una línia si s’ha partit). */
 export type FragmentPalet = {
   paradaIndex: number
@@ -50,6 +57,11 @@ export type PaletOmplert = {
   ocupatCaixes: number
   /** Ordre d’apilament (emmagatzematge): índex 0 = base del palet (més kg/caixa eq.); l’últim = a dalt. La vista UI pot mostrar la pila de dalt a baix. */
   fragments: FragmentPalet[]
+  /**
+   * Ocupació per pis (6 ranures de barril com a màxim; caixes amb forats respecte barrils).
+   * Índex 0 = base, 4 = pis superior.
+   */
+  planPisos?: readonly PisPlaEmmagatzematge[]
 }
 
 export type PlaCarrega = {
