@@ -49,3 +49,23 @@ export function advanceDistanceWithStops(
 
   return { nextDistance, deliveryArrival: null }
 }
+
+/**
+ * Primera parada d’entrega (no magatzem) encara no reconeguda per la qual la distància ja ha arribat o passat.
+ * Útil en restaurar posició desada sense perdre la pausa d’entrega.
+ */
+export function blockingDeliveryIndexAtDistance(
+  distanceAlong: number,
+  stopDistances: readonly number[],
+  parades: readonly ParadaRuta[],
+  acknowledgedDeliveryIndices: ReadonlySet<number>,
+): number {
+  for (let i = 0; i < parades.length; i++) {
+    if (esParadaMagatzem(i, parades.length)) continue
+    if (acknowledgedDeliveryIndices.has(i)) continue
+    const stopD = stopDistances[i]
+    if (stopD === undefined) continue
+    if (distanceAlong >= stopD) return i
+  }
+  return -1
+}

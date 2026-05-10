@@ -13,6 +13,7 @@ export function TruckDetailsPage() {
   const normalizedCode = codi.trim().toUpperCase()
   const camio = getCamioPerCodi(normalizedCode)
   const [activeTab, setActiveTab] = useState<TruckViewTab>('distribuidora')
+  const [plaDistribucioRevision, setPlaDistribucioRevision] = useState(0)
 
   useDocumentTitle(camio ? `Camió ${camio.codi}` : 'Camió no trobat')
 
@@ -58,26 +59,26 @@ export function TruckDetailsPage() {
             </button>
           </div>
 
-          {activeTab === 'distribuidora' ? (
-            <>
-              <div className="shrink-0 space-y-1 pb-2">
-                <h2 className="text-lg font-semibold text-slate-900">Vista distribuidora</h2>
-                <p className="mt-1 max-w-3xl text-slate-600">
-                  Pla de palets optimitzat (cabina, ordre d&apos;entregues, 60 caixes/palet) emmagatzemat al camió.
-                </p>
-              </div>
-              <div className="flex min-h-0 flex-1 flex-col items-center justify-center py-6">
-                <DistribuidoraPalletPlan camio={camio} />
-              </div>
-            </>
-          ) : (
-            <div className="min-h-0 flex-1">
-              <TruckConductorPanel
-                camio={camio}
-                key={`${camio.codi}-${camio.ruta?.id ?? 'sense-ruta'}`}
-              />
+          <div className={activeTab === 'distribuidora' ? 'flex min-h-0 flex-1 flex-col' : 'hidden'}>
+            <div className="shrink-0 space-y-1 pb-2">
+              <h2 className="text-lg font-semibold text-slate-900">Vista distribuidora</h2>
+              <p className="mt-1 max-w-3xl text-slate-600">
+                Pla de palets optimitzat (cabina, ordre d&apos;entregues, 60 caixes/palet) emmagatzemat al camió.
+              </p>
             </div>
-          )}
+            <div className="flex min-h-0 flex-1 flex-col items-center justify-center py-6">
+              <DistribuidoraPalletPlan camio={camio} plaDistribucioRevision={plaDistribucioRevision} />
+            </div>
+          </div>
+
+          <div className={activeTab === 'conductor' ? 'flex min-h-0 flex-1 flex-col' : 'hidden'}>
+            <TruckConductorPanel
+              camio={camio}
+              key={`${camio.codi}-${camio.ruta?.id ?? 'sense-ruta'}`}
+              onReiniciSimulacioRuta={() => setPlaDistribucioRevision((n) => n + 1)}
+              routeTabVisible={activeTab === 'conductor'}
+            />
+          </div>
         </div>
       )}
     </main>

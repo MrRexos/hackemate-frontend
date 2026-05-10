@@ -12,6 +12,7 @@ import {
 } from '@/utils/routePathDrive'
 import {
   advanceDistanceWithStops,
+  blockingDeliveryIndexAtDistance,
   computeSimulationDtSec,
   type DeliveryArrivalPayload,
 } from '@/utils/driveSimulation'
@@ -35,6 +36,7 @@ type Props = {
   speedMps: number
   resetSignal: number
   acknowledgedDeliveryIndices: ReadonlySet<number>
+  initialDistanceAlong?: number
   onDeliveryArrival: (payload: DeliveryArrivalPayload) => void
   onDriveReady: (meta: { stopDistances: number[]; totalMeters: number }) => void
   onDriveTick: (payload: { distanceAlong: number }) => void
@@ -65,6 +67,7 @@ function GoogleDrivingRouteMapInner({
   speedMps,
   resetSignal,
   acknowledgedDeliveryIndices,
+  initialDistanceAlong,
   onDeliveryArrival,
   onDriveReady,
   onDriveTick,
@@ -223,15 +226,34 @@ function GoogleDrivingRouteMapInner({
     const stopDistances = computeStopDistancesAlongPath(metrics, stopCoords)
     readyRef.current({ stopDistances, totalMeters: metrics.totalMeters })
 
-    let distanceAlong = 0
+    const rawStart =
+      initialDistanceAlong !== undefined ? initialDistanceAlong : 0
+    const startDist = Math.max(0, Math.min(rawStart, metrics.totalMeters))
+
+    let distanceAlong = startDist
     let lastTs = performance.now()
     let raf = 0
-    let smoothHeading = sampleAlongPath(metrics, 0, LOOK_AHEAD_M, { loop: false }).heading
+    let smoothHeading = sampleAlongPath(metrics, startDist, LOOK_AHEAD_M, { loop: false }).heading
     let tickCounter = 0
-    let awaitingAckForIndex = -1
+    let awaitingAckForIndex = blockingDeliveryIndexAtDistance(
+      startDist,
+      stopDistances,
+      parades,
+      ackRef.current,
+    )
+    let restoreArrivalPending =
+      awaitingAckForIndex >= 0 && !ackRef.current.has(awaitingAckForIndex)
     let routeCompleteEmitted = false
 
     const tick = (now: number) => {
+      if (restoreArrivalPending && awaitingAckForIndex >= 0) {
+        restoreArrivalPending = false
+        arrivalRef.current({
+          index: awaitingAckForIndex,
+          nom: parades[awaitingAckForIndex].nom,
+        })
+      }
+
       if (awaitingAckForIndex >= 0 && ackRef.current.has(awaitingAckForIndex)) {
         awaitingAckForIndex = -1
       }
@@ -299,7 +321,7 @@ function GoogleDrivingRouteMapInner({
     return () => {
       cancelAnimationFrame(raf)
     }
-  }, [map, isLoaded, pathPoints, routeKey, parades, resetSignal])
+  }, [map, isLoaded, pathPoints, routeKey, parades, resetSignal, initialDistanceAlong])
 
   if (loadError) {
     return (

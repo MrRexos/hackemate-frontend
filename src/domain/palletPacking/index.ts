@@ -14,3 +14,13 @@ export {
   volumTotalLiniesEnCaixes,
 } from './escalaLiniesCapacitatCamio'
 export { compararFragmentPerBasePrimer, densitatKgPerCaixaEq } from './densitatFragment'
+export type { RepartimentRetornCaixesBarrils } from './retornablesPostEntrega'
+export {
+  afegirRetornablesAlPla,
+  descripcioUbicacioRetornablesParada,
+  repartirRetorn60PercentEnCaixesIBarrils,
+  resumRepartimentRetornText,
+  treureMercaderiaParadaDelPla,
+  volumEntregatParadaEnCaixes,
+  volumMercaderiaNoRetornableParadaAlPla,
+} from './retornablesPostEntrega'

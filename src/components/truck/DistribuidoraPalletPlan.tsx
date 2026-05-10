@@ -4,9 +4,12 @@ import type { Camio } from '@/models/Camio'
 
 type Props = {
   camio: Camio
+  /** S’incrementa en «Reiniciar ruta» (conductor) per tornar a reflectir el pla de paquets. */
+  plaDistribucioRevision?: number
 }
 
-export function DistribuidoraPalletPlan({ camio }: Props) {
+export function DistribuidoraPalletPlan({ camio, plaDistribucioRevision = 0 }: Props) {
+  void plaDistribucioRevision
   const ruta = camio.ruta
   const { error } = useCamioDistribucio(camio)
 

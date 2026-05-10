@@ -89,6 +89,7 @@ function clientEntrega(f: FragmentPalet): string {
 export type CatCarrega = 'caja' | 'barril' | 'lata' | 'retornable' | 'otros'
 
 export function catCarrega(f: FragmentPalet): CatCarrega {
+  if (f.esRetornable) return 'retornable'
   const s = `${f.materialNom} ${f.producteNom}`.toLowerCase()
   if (s.includes('retorn')) return 'retornable'
   if (f.unitat === 'BARRIL' || s.includes('barril') || s.includes('bidó')) return 'barril'
@@ -132,7 +133,6 @@ function CeldaPalet({
       : encaraAlCamio.filter((f) => f.paradaIndex === paradaEntregaIndex)
   const filtreParada = paradaEntregaIndex !== undefined
   const senseMercaderiaAqui = filtreParada && fragsMostrats.length === 0
-  const buitTotal = encaraAlCamio.length === 0
   const buit = fragsMostrats.length === 0
   const fragsVistaPila = fragmentsPerVistaPilaDesDeDalt(fragsMostrats)
   const vols = fragsVistaPila.map((f) => Math.max(0.05, f.volumCaixes / CAIXES_PER_PALLET))
@@ -220,13 +220,6 @@ function CeldaPalet({
         </div>
       </div>
 
-      {buit && (
-        <div className="pointer-events-none absolute inset-0 z-[2] flex items-end justify-center pb-[12%]">
-          <span style={{ fontSize: '0.52rem', color: '#92400e', fontWeight: 600, opacity: 0.55 }}>
-            {filtreParada && !buitTotal ? 'No' : 'Buit'}
-          </span>
-        </div>
-      )}
     </button>
   )
 }

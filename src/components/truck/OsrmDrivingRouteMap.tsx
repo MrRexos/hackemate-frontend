@@ -6,6 +6,7 @@ import { MapContainer, Marker, Polyline, Popup, TileLayer, useMap } from 'react-
 import type { ParadaRuta } from '@/models/Ruta'
 import {
   advanceDistanceWithStops,
+  blockingDeliveryIndexAtDistance,
   computeSimulationDtSec,
   type DeliveryArrivalPayload,
 } from '@/utils/driveSimulation'
@@ -56,6 +57,8 @@ type SimProps = {
   resetSignal: number
   rotateInnerRef: RefObject<HTMLDivElement | null>
   acknowledgedDeliveryIndices: ReadonlySet<number>
+  /** Distància inicial al llarg del camí (p. ex. sessió restaurada). */
+  initialDistanceAlong?: number
   onDeliveryArrival: (payload: DeliveryArrivalPayload) => void
   onDriveReady: (meta: { stopDistances: number[]; totalMeters: number }) => void
   onDriveTick: (payload: { distanceAlong: number }) => void
@@ -70,6 +73,7 @@ function OsrmTruckSimulator({
   resetSignal,
   rotateInnerRef,
   acknowledgedDeliveryIndices,
+  initialDistanceAlong,
   onDeliveryArrival,
   onDriveReady,
   onDriveTick,
@@ -115,15 +119,34 @@ function OsrmTruckSimulator({
     const stopDistances = computeStopDistancesAlongPath(metrics, stopCoords)
     readyRef.current({ stopDistances, totalMeters: metrics.totalMeters })
 
-    let distanceAlong = 0
+    const rawStart =
+      initialDistanceAlong !== undefined ? initialDistanceAlong : 0
+    const startDist = Math.max(0, Math.min(rawStart, metrics.totalMeters))
+
+    let distanceAlong = startDist
     let lastTs = performance.now()
     let raf = 0
-    let smoothHeading = sampleAlongPath(metrics, 0, LOOK_AHEAD_M, { loop: false }).heading
+    let smoothHeading = sampleAlongPath(metrics, startDist, LOOK_AHEAD_M, { loop: false }).heading
     let tickCounter = 0
-    let awaitingAckForIndex = -1
+    let awaitingAckForIndex = blockingDeliveryIndexAtDistance(
+      startDist,
+      stopDistances,
+      parades,
+      ackRef.current,
+    )
+    let restoreArrivalPending =
+      awaitingAckForIndex >= 0 && !ackRef.current.has(awaitingAckForIndex)
     let routeCompleteEmitted = false
 
     const tick = (now: number) => {
+      if (restoreArrivalPending && awaitingAckForIndex >= 0) {
+        restoreArrivalPending = false
+        arrivalRef.current({
+          index: awaitingAckForIndex,
+          nom: parades[awaitingAckForIndex].nom,
+        })
+      }
+
       if (awaitingAckForIndex >= 0 && ackRef.current.has(awaitingAckForIndex)) {
         awaitingAckForIndex = -1
       }
@@ -192,7 +215,7 @@ function OsrmTruckSimulator({
         rotEl.style.transform = 'translate(-50%, -50%) rotate(0deg)'
       }
     }
-  }, [map, path, parades, resetSignal, rotateInnerRef])
+  }, [map, path, parades, resetSignal, rotateInnerRef, initialDistanceAlong])
 
   return null
 }
@@ -224,6 +247,7 @@ type Props = {
   speedMps: number
   resetSignal: number
   acknowledgedDeliveryIndices: ReadonlySet<number>
+  initialDistanceAlong?: number
   onDeliveryArrival: (payload: DeliveryArrivalPayload) => void
   onDriveReady: (meta: { stopDistances: number[]; totalMeters: number }) => void
   onDriveTick: (payload: { distanceAlong: number }) => void
@@ -236,6 +260,7 @@ function OsrmDrivingRouteMapInner({
   speedMps,
   resetSignal,
   acknowledgedDeliveryIndices,
+  initialDistanceAlong,
   onDeliveryArrival,
   onDriveReady,
   onDriveTick,
@@ -354,6 +379,7 @@ function OsrmDrivingRouteMapInner({
             {canSimulate ? (
               <OsrmTruckSimulator
                 acknowledgedDeliveryIndices={acknowledgedDeliveryIndices}
+                initialDistanceAlong={initialDistanceAlong}
                 onDeliveryArrival={onDeliveryArrival}
                 onDriveReady={onDriveReady}
                 onDriveTick={onDriveTick}

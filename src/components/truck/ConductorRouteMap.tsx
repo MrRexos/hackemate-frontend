@@ -11,6 +11,8 @@ type Props = {
   speedMps: number
   resetSignal: number
   acknowledgedDeliveryIndices: ReadonlySet<number>
+  /** Distància inicial al llarg del camí (sessió restaurada des de `sessionStorage`). */
+  initialDistanceAlong?: number
   onDeliveryArrival: (payload: DeliveryArrivalPayload) => void
   onDriveReady: (meta: { stopDistances: number[]; totalMeters: number }) => void
   onDriveTick: (payload: { distanceAlong: number }) => void
@@ -33,6 +35,7 @@ export function ConductorRouteMap({
   speedMps,
   resetSignal,
   acknowledgedDeliveryIndices,
+  initialDistanceAlong,
   onDeliveryArrival,
   onDriveReady,
   onDriveTick,
@@ -50,6 +53,7 @@ export function ConductorRouteMap({
       <GoogleDrivingRouteMap
         key={mapKey}
         acknowledgedDeliveryIndices={acknowledgedDeliveryIndices}
+        initialDistanceAlong={initialDistanceAlong}
         onDeliveryArrival={onDeliveryArrival}
         onDriveReady={onDriveReady}
         onDriveTick={onDriveTick}
@@ -65,6 +69,7 @@ export function ConductorRouteMap({
     <OsrmDrivingRouteMap
       key={mapKey}
       acknowledgedDeliveryIndices={acknowledgedDeliveryIndices}
+      initialDistanceAlong={initialDistanceAlong}
       onDeliveryArrival={onDeliveryArrival}
       onDriveReady={onDriveReady}
       onDriveTick={onDriveTick}

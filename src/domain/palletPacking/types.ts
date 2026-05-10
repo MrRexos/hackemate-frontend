@@ -34,6 +34,8 @@ export type FragmentPalet = {
   /** Quantitat d’aquest tros en unitat de comanda (caixes / llaunes / barrils), enter per UI. */
   quantitatUnitatComanda: number
   pesKg: number
+  /** Mercaderia de retorn (lleugera); ordenació especial a la pila i als palets. */
+  esRetornable?: boolean
   clienteId?: string
   empresaNom?: string
 }

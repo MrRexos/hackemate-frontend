@@ -1,21 +1,55 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 
 import { ConductorRouteMap } from '@/components/truck/ConductorRouteMap'
 import { DistribuidoraCamioPla2D } from '@/components/truck/DistribuidoraCamioPla2D'
 import { RouteStopsTimeline } from '@/components/truck/RouteStopsTimeline'
-import type { LiniaDistribucio } from '@/domain/palletPacking'
+import type { RepartimentRetornCaixesBarrils } from '@/domain/palletPacking'
+import {
+  descripcioUbicacioRetornablesParada,
+  repartirRetorn60PercentEnCaixesIBarrils,
+  resumRepartimentRetornText,
+  volumMercaderiaNoRetornableParadaAlPla,
+} from '@/domain/palletPacking'
 import type { Camio } from '@/models/Camio'
-import { fetchLiniesDistribucioAmbOrigen } from '@/services/distribucioApi'
+import { useCamioDistribucio } from '@/hooks/useCamioDistribucio'
 import type { DeliveryArrivalPayload } from '@/utils/driveSimulation'
+import {
+  clearCamioDistribucioSnapshot,
+  fingerprintLiniesDistribucio,
+  saveCamioDistribucioSnapshot,
+} from '@/utils/camioDistribucioPersistence'
+import {
+  clearConductorRouteSession,
+  loadConductorRouteSession,
+  saveConductorRouteSession,
+} from '@/utils/conductorRoutePersistence'
 import { resumLiniaEntregaModal } from '@/utils/formatDistribucio'
 import { esParadaMagatzem } from '@/utils/paradaMap'
 import { timelineScrollLeadIndex } from '@/utils/routePathDrive'
 
 type Props = {
   camio: Camio
+  /**
+   * Si és false (pestanya Distribuidora visible), la simulació es pausa sense perdre posició.
+   * El panell roman muntat per conservar estat.
+   */
+  routeTabVisible?: boolean
+  /** Es crida després de reiniciar la ruta per actualitzar la vista Distribuidora (pla de paquets). */
+  onReiniciSimulacioRuta?: () => void
 }
 
 const PROGRAMMATIC_SCROLL_MS = 720
+
+type DeliveryFlowState =
+  | { step: 'arrival'; payload: DeliveryArrivalPayload }
+  | { step: 'retornQuestion'; index: number; nom: string }
+  | { step: 'retornUbicacio'; index: number; nom: string; repartiment: RepartimentRetornCaixesBarrils }
+
+function deliveryFlowStopIndex(flow: DeliveryFlowState | null): number | null {
+  if (!flow) return null
+  if (flow.step === 'arrival') return flow.payload.index
+  return flow.index
+}
 
 function isElementFullyVisibleInScroller(row: HTMLElement, scroller: HTMLElement): boolean {
   const sr = scroller.getBoundingClientRect()
@@ -23,11 +57,47 @@ function isElementFullyVisibleInScroller(row: HTMLElement, scroller: HTMLElement
   return rr.top >= sr.top - 2 && rr.bottom <= sr.bottom + 2
 }
 
+function bootstrapConductorFromStorage(camio: Camio): {
+  distanceAlong: number
+  completedDeliveryIndices: ReadonlySet<number>
+  speedKmh: number
+  journeyCompleteOpen: boolean
+  sessionInitialDistanceAlong: number | undefined
+} {
+  const rutaId = camio.ruta?.id
+  if (rutaId == null) {
+    return {
+      distanceAlong: 0,
+      completedDeliveryIndices: new Set(),
+      speedKmh: 48,
+      journeyCompleteOpen: false,
+      sessionInitialDistanceAlong: undefined,
+    }
+  }
+  const snap = loadConductorRouteSession(camio.codi, rutaId)
+  if (!snap) {
+    return {
+      distanceAlong: 0,
+      completedDeliveryIndices: new Set(),
+      speedKmh: 48,
+      journeyCompleteOpen: false,
+      sessionInitialDistanceAlong: undefined,
+    }
+  }
+  return {
+    distanceAlong: snap.distanceAlong,
+    completedDeliveryIndices: new Set(snap.completedDeliveryIndices),
+    speedKmh: typeof snap.speedKmh === 'number' && snap.speedKmh > 0 ? snap.speedKmh : 48,
+    journeyCompleteOpen: snap.journeyCompleteOpen === true,
+    sessionInitialDistanceAlong: snap.distanceAlong,
+  }
+}
+
 /**
  * Estat de la línia de temps local al panell; el `key` al pare força reinici en canvi de camió/ruta.
  */
-export function TruckConductorPanel({ camio }: Props) {
-  const [speedKmh, setSpeedKmh] = useState(48)
+export function TruckConductorPanel({ camio, routeTabVisible = true, onReiniciSimulacioRuta }: Props) {
+  const [speedKmh, setSpeedKmh] = useState(() => bootstrapConductorFromStorage(camio).speedKmh)
   const speedMps = speedKmh / 3.6
 
   const [resetSignal, setResetSignal] = useState(0)
@@ -35,23 +105,73 @@ export function TruckConductorPanel({ camio }: Props) {
     stopDistances: number[]
     totalMeters: number
   } | null>(null)
-  const [distanceAlong, setDistanceAlong] = useState(0)
-  const [deliveryModal, setDeliveryModal] = useState<DeliveryArrivalPayload | null>(null)
+  const [distanceAlong, setDistanceAlong] = useState(() => bootstrapConductorFromStorage(camio).distanceAlong)
+  const [deliveryFlow, setDeliveryFlow] = useState<DeliveryFlowState | null>(null)
   const [completedDeliveryIndices, setCompletedDeliveryIndices] = useState(
-    (): ReadonlySet<number> => new Set(),
+    (): ReadonlySet<number> => bootstrapConductorFromStorage(camio).completedDeliveryIndices,
   )
-  const [journeyCompleteOpen, setJourneyCompleteOpen] = useState(false)
+  const [journeyCompleteOpen, setJourneyCompleteOpen] = useState(
+    () => bootstrapConductorFromStorage(camio).journeyCompleteOpen,
+  )
   const [simPlaying, setSimPlaying] = useState(false)
   const [simControlsOpen, setSimControlsOpen] = useState(false)
 
-  const [liniesDistribucio, setLiniesDistribucio] = useState<LiniaDistribucio[] | null>(null)
-  const [distribucioError, setDistribucioError] = useState<string | null>(null)
+  /** Distància inicial del simulador quan es restaura una sessió (no es neteja fins reinici o canvi de ruta). */
+  const [sessionInitialDistanceAlong, setSessionInitialDistanceAlong] = useState<number | undefined>(
+    () => bootstrapConductorFromStorage(camio).sessionInitialDistanceAlong,
+  )
+
+  const { error: distribucioError } = useCamioDistribucio(camio)
+  const liniesDistribucio = camio.liniesDistribucio
 
   const stopsScrollRef = useRef<HTMLDivElement>(null)
   const programmaticScrollRef = useRef(false)
   const programmaticScrollTimerRef = useRef<ReturnType<typeof window.setTimeout> | null>(null)
   const userScrollPausedFollowRef = useRef(false)
   const prevLeadIndexRef = useRef(-1)
+
+  const persistRef = useRef({
+    codi: camio.codi,
+    rutaId: camio.ruta?.id ?? null,
+    driveMeta: null as typeof driveMeta,
+    distanceAlong: 0,
+    completedDeliveryIndices: new Set<number>() as ReadonlySet<number>,
+    speedKmh: 48,
+    journeyCompleteOpen: false,
+  })
+  useLayoutEffect(() => {
+    persistRef.current = {
+      codi: camio.codi,
+      rutaId: camio.ruta?.id ?? null,
+      driveMeta,
+      distanceAlong,
+      completedDeliveryIndices,
+      speedKmh,
+      journeyCompleteOpen,
+    }
+  }, [
+    camio.codi,
+    camio.ruta?.id,
+    driveMeta,
+    distanceAlong,
+    completedDeliveryIndices,
+    speedKmh,
+    journeyCompleteOpen,
+  ])
+
+  const persistirPlaSiRouteIniciada = useCallback(() => {
+    const p = persistRef.current
+    if (p.rutaId == null || !p.driveMeta) return
+    const iniciada =
+      p.completedDeliveryIndices.size > 0 || p.distanceAlong > 0 || p.journeyCompleteOpen
+    if (!iniciada) return
+    if (!camio.plaCarrega || camio.liniesDistribucio === null) return
+    const fp = fingerprintLiniesDistribucio(camio.liniesDistribucio)
+    const snap = camio.extreureSnapshotDistribucioPersistit(fp)
+    if (snap) {
+      saveCamioDistribucioSnapshot(camio.codi, p.rutaId, snap)
+    }
+  }, [camio])
 
   const scrollLeadIndex = useMemo(() => {
     if (!camio.ruta || !driveMeta?.stopDistances) return 0
@@ -78,47 +198,54 @@ export function TruckConductorPanel({ camio }: Props) {
   }, [camio.ruta, completedDeliveryIndices])
 
   useEffect(() => {
-    const r = camio.ruta
-    if (!r) return
+    const rutaId = camio.ruta?.id
+    if (rutaId == null || !driveMeta) return
 
-    let cancelled = false
-    void Promise.resolve()
-      .then(() => {
-        if (cancelled) return
-        setLiniesDistribucio(null)
-        setDistribucioError(null)
+    const id = window.setTimeout(() => {
+      saveConductorRouteSession(camio.codi, rutaId, {
+        distanceAlong,
+        completedDeliveryIndices: [...completedDeliveryIndices].sort((a, b) => a - b),
+        speedKmh,
+        journeyCompleteOpen,
       })
-      .then(() => {
-        if (cancelled) return
-        return fetchLiniesDistribucioAmbOrigen(
-          r.id,
-          r.parades.length,
-          r.transporteId ?? null,
-          r.ordreEntregues ?? null,
-          camio.tipus,
-        )
-      })
-      .then((res) => {
-        if (cancelled || !res) return
-        camio.actualitzarDistribucio(res.linies)
-        setLiniesDistribucio(res.linies)
-      })
-      .catch((e: unknown) => {
-        if (cancelled) return
-        setDistribucioError(e instanceof Error ? e.message : 'No s’han pogut carregar les línies.')
-        camio.actualitzarDistribucio([])
-        setLiniesDistribucio([])
-      })
+      persistirPlaSiRouteIniciada()
+    }, 350)
 
-    return () => {
-      cancelled = true
+    return () => window.clearTimeout(id)
+  }, [
+    camio.codi,
+    camio.ruta?.id,
+    driveMeta,
+    distanceAlong,
+    completedDeliveryIndices,
+    speedKmh,
+    journeyCompleteOpen,
+    persistirPlaSiRouteIniciada,
+  ])
+
+  useEffect(() => {
+    const flush = () => {
+      const p = persistRef.current
+      if (p.rutaId == null || !p.driveMeta) return
+      saveConductorRouteSession(p.codi, p.rutaId, {
+        distanceAlong: p.distanceAlong,
+        completedDeliveryIndices: [...p.completedDeliveryIndices].sort((a, b) => a - b),
+        speedKmh: p.speedKmh,
+        journeyCompleteOpen: p.journeyCompleteOpen,
+      })
+      persistirPlaSiRouteIniciada()
     }
-  }, [camio.codi, camio.ruta?.id, camio])
+    window.addEventListener('pagehide', flush)
+    return () => {
+      window.removeEventListener('pagehide', flush)
+      flush()
+    }
+  }, [persistirPlaSiRouteIniciada])
 
   const liniesModalEntrega = useMemo(() => {
-    if (!deliveryModal || !liniesDistribucio?.length) return []
-    return liniesDistribucio.filter((l) => l.paradaIndex === deliveryModal.index)
-  }, [deliveryModal, liniesDistribucio])
+    if (!deliveryFlow || deliveryFlow.step !== 'arrival' || !liniesDistribucio?.length) return []
+    return liniesDistribucio.filter((l) => l.paradaIndex === deliveryFlow.payload.index)
+  }, [deliveryFlow, liniesDistribucio])
 
   const clearProgrammaticTimer = useCallback(() => {
     if (programmaticScrollTimerRef.current != null) {
@@ -130,13 +257,15 @@ export function TruckConductorPanel({ camio }: Props) {
   const onDriveReady = useCallback(
     (meta: { stopDistances: number[]; totalMeters: number }) => {
       setDriveMeta(meta)
-      setDistanceAlong(0)
-      setJourneyCompleteOpen(false)
+      setDistanceAlong((prev) => Math.max(0, Math.min(prev, meta.totalMeters)))
       setSimPlaying(false)
-      userScrollPausedFollowRef.current = false
-      prevLeadIndexRef.current = -1
+      if (sessionInitialDistanceAlong === undefined) {
+        setJourneyCompleteOpen(false)
+        userScrollPausedFollowRef.current = false
+        prevLeadIndexRef.current = -1
+      }
     },
-    [],
+    [sessionInitialDistanceAlong],
   )
 
   const onDriveTick = useCallback((payload: { distanceAlong: number }) => {
@@ -144,7 +273,7 @@ export function TruckConductorPanel({ camio }: Props) {
   }, [])
 
   const onDeliveryArrival = useCallback((payload: DeliveryArrivalPayload) => {
-    setDeliveryModal(payload)
+    setDeliveryFlow({ step: 'arrival', payload })
   }, [])
 
   const onRouteComplete = useCallback(() => {
@@ -152,13 +281,9 @@ export function TruckConductorPanel({ camio }: Props) {
     setJourneyCompleteOpen(true)
   }, [])
 
-  const dismissDelivery = useCallback(() => {
-    setDeliveryModal((current) => {
-      if (current) {
-        setCompletedDeliveryIndices((prev) => new Set([...prev, current.index]))
-      }
-      return null
-    })
+  const completeDeliveryForIndex = useCallback((index: number) => {
+    setCompletedDeliveryIndices((prev) => new Set([...prev, index]))
+    setDeliveryFlow(null)
   }, [])
 
   const dismissJourneyComplete = useCallback(() => {
@@ -166,14 +291,21 @@ export function TruckConductorPanel({ camio }: Props) {
   }, [])
 
   const handleReset = () => {
+    if (camio.ruta?.id != null) {
+      clearConductorRouteSession(camio.codi, camio.ruta.id)
+      clearCamioDistribucioSnapshot(camio.codi, camio.ruta.id)
+    }
+    camio.reiniciarEstatDistribucioSimulacio()
+    onReiniciSimulacioRuta?.()
     clearProgrammaticTimer()
     setResetSignal((n) => n + 1)
     setDriveMeta(null)
     setDistanceAlong(0)
-    setDeliveryModal(null)
+    setDeliveryFlow(null)
     setJourneyCompleteOpen(false)
     setCompletedDeliveryIndices(new Set())
     setSimPlaying(false)
+    setSessionInitialDistanceAlong(undefined)
     userScrollPausedFollowRef.current = false
     prevLeadIndexRef.current = -1
     programmaticScrollRef.current = false
@@ -187,12 +319,12 @@ export function TruckConductorPanel({ camio }: Props) {
     prevLeadIndexRef.current = scrollLeadIndex
   }, [scrollLeadIndex])
 
-  /** Arribada a entrega: sempre repren seguiment i centra el punt. */
+  /** Flux entrega / retorn: repren seguiment i centra el punt. */
   useEffect(() => {
-    if (deliveryModal) {
+    if (deliveryFlow) {
       userScrollPausedFollowRef.current = false
     }
-  }, [deliveryModal])
+  }, [deliveryFlow])
 
   const scrollStopsToIndex = useCallback((index: number, behavior: ScrollBehavior) => {
     const root = stopsScrollRef.current
@@ -210,24 +342,37 @@ export function TruckConductorPanel({ camio }: Props) {
 
   useEffect(() => () => clearProgrammaticTimer(), [clearProgrammaticTimer])
 
+  /** Quan es torna a mostrar la pestanya Conductor, Leaflet/Google necessiten un resize després de sortir de `display:none`. */
+  useEffect(() => {
+    if (!routeTabVisible || !camio.ruta) return
+    const id = requestAnimationFrame(() => {
+      requestAnimationFrame(() => {
+        window.dispatchEvent(new Event('resize'))
+      })
+    })
+    return () => cancelAnimationFrame(id)
+  }, [routeTabVisible, camio.ruta])
+
   /** Seguiment suau: només quan canvia la parada objectiu (ritme dels trams de ruta). */
   useEffect(() => {
     if (
       userScrollPausedFollowRef.current ||
       !camio.ruta ||
       !driveMeta ||
-      deliveryModal != null
+      deliveryFlow != null ||
+      !routeTabVisible
     ) {
       return
     }
     scrollStopsToIndex(scrollLeadIndex, 'smooth')
-  }, [scrollLeadIndex, deliveryModal, camio.ruta, driveMeta, scrollStopsToIndex])
+  }, [scrollLeadIndex, deliveryFlow, routeTabVisible, camio.ruta, driveMeta, scrollStopsToIndex])
 
-  /** Modal d’entrega: centra la fila del punt on ets. */
+  /** Modal entrega / retorn: centra la fila del punt on ets. */
   useEffect(() => {
-    if (!deliveryModal) return
-    scrollStopsToIndex(deliveryModal.index, 'smooth')
-  }, [deliveryModal, scrollStopsToIndex])
+    const idx = deliveryFlowStopIndex(deliveryFlow)
+    if (idx == null) return
+    scrollStopsToIndex(idx, 'smooth')
+  }, [deliveryFlow, scrollStopsToIndex])
 
   /** Fi de trajecte: darrera parada. */
   useEffect(() => {
@@ -269,7 +414,7 @@ export function TruckConductorPanel({ camio }: Props) {
         }
         return
       }
-      if (deliveryModal != null || journeyCompleteOpen) return
+      if (deliveryFlow != null || journeyCompleteOpen) return
       const el = e.target
       if (!(el instanceof HTMLElement)) return
       const tag = el.tagName
@@ -281,7 +426,7 @@ export function TruckConductorPanel({ camio }: Props) {
     }
     window.addEventListener('keydown', onKey)
     return () => window.removeEventListener('keydown', onKey)
-  }, [simControlsOpen, deliveryModal, journeyCompleteOpen])
+  }, [simControlsOpen, deliveryFlow, journeyCompleteOpen])
 
   return (
     <div className="relative">
@@ -317,13 +462,14 @@ export function TruckConductorPanel({ camio }: Props) {
           {camio.ruta ? (
             <ConductorRouteMap
               acknowledgedDeliveryIndices={completedDeliveryIndices}
+              initialDistanceAlong={sessionInitialDistanceAlong}
               onDeliveryArrival={onDeliveryArrival}
               onDriveReady={onDriveReady}
               onDriveTick={onDriveTick}
               onRouteComplete={onRouteComplete}
               parades={camio.ruta.parades}
               resetSignal={resetSignal}
-              simulationPaused={!simPlaying || deliveryModal !== null}
+              simulationPaused={!simPlaying || deliveryFlow !== null || !routeTabVisible}
               speedMps={speedMps}
             />
           ) : (
@@ -457,82 +603,175 @@ export function TruckConductorPanel({ camio }: Props) {
         </div>
       ) : null}
 
-      {deliveryModal ? (
+      {deliveryFlow ? (
         <div
           aria-modal="true"
           className="fixed inset-0 z-[2000] flex items-center justify-center bg-slate-900/50 p-4 backdrop-blur-[2px]"
           role="dialog"
         >
-          <div className="max-h-[min(92vh,900px)] w-full max-w-4xl overflow-y-auto rounded-2xl border border-slate-200 bg-white p-5 shadow-2xl sm:p-6">
-            <h3 className="text-lg font-semibold text-slate-900">Entrega</h3>
-            <p className="mt-2 text-sm leading-relaxed text-slate-600">
-              Has arribat al punt d’entrega:
-              <span className="mt-1 block font-semibold text-slate-900">{deliveryModal.nom}</span>
-            </p>
-            <p className="mt-2 text-xs text-amber-900/90">
-              La simulació de la ruta està en pausa fins que finalitzis la comanda.
-            </p>
+          {deliveryFlow.step === 'arrival' ? (
+            <div className="max-h-[min(92vh,900px)] w-full max-w-4xl overflow-y-auto rounded-2xl border border-slate-200 bg-white p-5 shadow-2xl sm:p-6">
+              <h3 className="text-lg font-semibold text-slate-900">Entrega</h3>
+              <p className="mt-2 text-sm leading-relaxed text-slate-600">
+                Has arribat al punt d’entrega:
+                <span className="mt-1 block font-semibold text-slate-900">{deliveryFlow.payload.nom}</span>
+              </p>
+              <p className="mt-2 text-xs text-amber-900/90">
+                La simulació de la ruta està en pausa fins que finalitzis la comanda.
+              </p>
 
-            <div className="mt-5 grid gap-5 lg:grid-cols-[1.15fr_1fr] lg:items-stretch lg:gap-6">
-              <div className="flex min-h-0 flex-col">
-                <p className="mb-2 text-xs font-semibold uppercase tracking-wide text-slate-600">
-                  Disseny del camió (mercat en verd = aquesta parada)
-                </p>
-                <div className="relative min-h-[200px] w-full overflow-hidden rounded-xl border border-slate-200 bg-[#ebe4d9] lg:min-h-[240px]">
-                  {camio.plaCarrega ? (
-                    <div className="h-[min(42vh,260px)] min-h-[200px] w-full lg:h-[280px]">
-                      <DistribuidoraCamioPla2D
-                        compacte
-                        encaixaSenseScroll
-                        paradaEntregaIndex={deliveryModal.index}
-                        paradesCompletades={completedDeliveryIndices}
-                        pla={camio.plaCarrega}
-                        senseLlegenda
-                        teDesbordament={camio.plaCarrega.teDesbordament}
-                        tipusCamio={camio.tipus}
-                      />
+              <div className="mt-5 grid gap-5 lg:grid-cols-[1.15fr_1fr] lg:items-stretch lg:gap-6">
+                <div className="flex min-h-0 flex-col">
+                  <p className="mb-2 text-xs font-semibold uppercase tracking-wide text-slate-600">
+                    Disseny del camió (mercat en verd = aquesta parada)
+                  </p>
+                  <div className="relative min-h-[200px] w-full overflow-hidden rounded-xl border border-slate-200 bg-[#ebe4d9] lg:min-h-[240px]">
+                    {camio.plaCarrega ? (
+                      <div className="h-[min(42vh,260px)] min-h-[200px] w-full lg:h-[280px]">
+                        <DistribuidoraCamioPla2D
+                          compacte
+                          encaixaSenseScroll
+                          paradaEntregaIndex={deliveryFlow.payload.index}
+                          paradesCompletades={completedDeliveryIndices}
+                          pla={camio.plaCarrega}
+                          senseLlegenda
+                          teDesbordament={camio.plaCarrega.teDesbordament}
+                          tipusCamio={camio.tipus}
+                        />
+                      </div>
+                    ) : (
+                      <div className="flex h-[200px] items-center justify-center px-4 text-center text-sm text-slate-500">
+                        Sense pla de càrrega disponible encara.
+                      </div>
+                    )}
+                  </div>
+                </div>
+
+                <div className="flex min-h-0 flex-col">
+                  {liniesModalEntrega.length > 0 ? (
+                    <div className="rounded-xl border border-slate-200 bg-slate-50 px-3 py-3">
+                      <p className="text-xs font-semibold uppercase tracking-wide text-slate-700">
+                        Mercaderia a entregar aquí
+                      </p>
+                      <ul className="mt-2 max-h-[min(40vh,280px)] space-y-2 overflow-y-auto text-sm text-slate-800 lg:max-h-[320px]">
+                        {liniesModalEntrega.map((l) => (
+                          <li className="border-b border-slate-200/80 pb-2 last:border-0 last:pb-0" key={l.producteId}>
+                            {resumLiniaEntregaModal(l)}
+                          </li>
+                        ))}
+                      </ul>
                     </div>
                   ) : (
-                    <div className="flex h-[200px] items-center justify-center px-4 text-center text-sm text-slate-500">
-                      Sense pla de càrrega disponible encara.
-                    </div>
+                    <p className="rounded-xl border border-dashed border-slate-200 bg-slate-50 px-3 py-4 text-xs text-slate-500">
+                      Sense detall de productes per aquesta parada (comprova la connexió o les taules de la BD).
+                    </p>
                   )}
+                  <p className="mt-3 text-xs text-slate-500">
+                    El camió romandrà aturat fins que confirmis la baixada de mercaderia.
+                  </p>
                 </div>
               </div>
 
-              <div className="flex min-h-0 flex-col">
-                {liniesModalEntrega.length > 0 ? (
-                  <div className="rounded-xl border border-slate-200 bg-slate-50 px-3 py-3">
-                    <p className="text-xs font-semibold uppercase tracking-wide text-slate-700">
-                      Mercaderia a entregar aquí
-                    </p>
-                    <ul className="mt-2 max-h-[min(40vh,280px)] space-y-2 overflow-y-auto text-sm text-slate-800 lg:max-h-[320px]">
-                      {liniesModalEntrega.map((l) => (
-                        <li className="border-b border-slate-200/80 pb-2 last:border-0 last:pb-0" key={l.producteId}>
-                          {resumLiniaEntregaModal(l)}
-                        </li>
-                      ))}
-                    </ul>
-                  </div>
-                ) : (
-                  <p className="rounded-xl border border-dashed border-slate-200 bg-slate-50 px-3 py-4 text-xs text-slate-500">
-                    Sense detall de productes per aquesta parada (comprova la connexió o les taules de la BD).
-                  </p>
-                )}
-                <p className="mt-3 text-xs text-slate-500">
-                  El camió romandrà aturat fins que confirmis la baixada de mercaderia.
-                </p>
+              <button
+                className="mt-6 h-11 w-full rounded-xl bg-slate-900 text-sm font-semibold text-white transition hover:bg-slate-800"
+                onClick={() =>
+                  setDeliveryFlow({
+                    step: 'retornQuestion',
+                    index: deliveryFlow.payload.index,
+                    nom: deliveryFlow.payload.nom,
+                  })
+                }
+                type="button"
+              >
+                He finalitzat la comanda
+              </button>
+            </div>
+          ) : null}
+
+          {deliveryFlow.step === 'retornQuestion' ? (
+            <div className="w-full max-w-md rounded-2xl border border-slate-200 bg-white p-6 shadow-2xl">
+              <h3 className="text-lg font-semibold text-slate-900">Retorn de buits</h3>
+              <p className="mt-2 text-sm text-slate-600">
+                Has recollit envàs retornable (buits) per portar al magatzem en aquesta entrega?
+              </p>
+              <p className="mt-2 text-xs text-amber-900/90">La ruta romandrà en pausa fins que responguis.</p>
+              <div className="mt-6 flex flex-col gap-2 sm:flex-row sm:gap-3">
+                <button
+                  className="h-11 flex-1 rounded-xl border border-slate-300 bg-white text-sm font-semibold text-slate-800 transition hover:bg-slate-50"
+                  onClick={() => {
+                    camio.finalitzarEntregaSenseRetorn(deliveryFlow.index)
+                    completeDeliveryForIndex(deliveryFlow.index)
+                  }}
+                  type="button"
+                >
+                  No, cap retorn
+                </button>
+                <button
+                  className="h-11 flex-1 rounded-xl bg-emerald-700 text-sm font-semibold text-white transition hover:bg-emerald-800"
+                  onClick={() => {
+                    if (!camio.plaCarrega) return
+                    const vol = volumMercaderiaNoRetornableParadaAlPla(camio.plaCarrega, deliveryFlow.index)
+                    const repartiment = repartirRetorn60PercentEnCaixesIBarrils(vol)
+                    camio.afegirRetornablesDespresEntrega(deliveryFlow.index)
+                    setDeliveryFlow({
+                      step: 'retornUbicacio',
+                      index: deliveryFlow.index,
+                      nom: deliveryFlow.nom,
+                      repartiment,
+                    })
+                  }}
+                  type="button"
+                >
+                  Sí, hi ha retorn
+                </button>
               </div>
             </div>
+          ) : null}
 
-            <button
-              className="mt-6 h-11 w-full rounded-xl bg-slate-900 text-sm font-semibold text-white transition hover:bg-slate-800"
-              onClick={dismissDelivery}
-              type="button"
-            >
-              Finalitzar comanda i continuar la ruta
-            </button>
-          </div>
+          {deliveryFlow.step === 'retornUbicacio' ? (
+            <div className="max-h-[min(92vh,900px)] w-full max-w-4xl overflow-y-auto rounded-2xl border border-slate-200 bg-white p-5 shadow-2xl sm:p-6">
+              <h3 className="text-lg font-semibold text-slate-900">On guardar el retorn</h3>
+              <p className="mt-1 text-sm text-slate-600">
+                Parada: <span className="font-semibold text-slate-900">{deliveryFlow.nom}</span>
+              </p>
+              <p className="mt-3 rounded-xl border border-slate-200 bg-slate-50 px-3 py-3 text-sm text-slate-800">
+                <span className="font-medium text-slate-900">Quantitat aproximada (60% del volum baixat del camió):</span>{' '}
+                {resumRepartimentRetornText(deliveryFlow.repartiment)}
+              </p>
+              <p className="mt-3 rounded-xl border border-emerald-200/80 bg-emerald-50/90 px-3 py-3 text-sm leading-relaxed text-emerald-950">
+                {descripcioUbicacioRetornablesParada(camio.plaCarrega, deliveryFlow.index, camio.tipus)}
+              </p>
+              <p className="mb-2 mt-5 text-xs font-semibold uppercase tracking-wide text-slate-600">
+                Pla del camió (verd = retornables d’aquesta parada)
+              </p>
+              <div className="relative min-h-[200px] w-full overflow-hidden rounded-xl border border-slate-200 bg-[#ebe4d9] lg:min-h-[260px]">
+                {camio.plaCarrega ? (
+                  <div className="h-[min(44vh,280px)] min-h-[220px] w-full lg:h-[300px]">
+                    <DistribuidoraCamioPla2D
+                      compacte
+                      encaixaSenseScroll
+                      paradaEntregaIndex={deliveryFlow.index}
+                      paradesCompletades={completedDeliveryIndices}
+                      pla={camio.plaCarrega}
+                      teDesbordament={camio.plaCarrega.teDesbordament}
+                      tipusCamio={camio.tipus}
+                    />
+                  </div>
+                ) : (
+                  <div className="flex h-[200px] items-center justify-center px-4 text-center text-sm text-slate-500">
+                    Sense pla de càrrega.
+                  </div>
+                )}
+              </div>
+              <button
+                className="mt-6 h-11 w-full rounded-xl bg-slate-900 text-sm font-semibold text-white transition hover:bg-slate-800"
+                onClick={() => completeDeliveryForIndex(deliveryFlow.index)}
+                type="button"
+              >
+                Ja està col·locat · Continuar la ruta
+              </button>
+            </div>
+          ) : null}
         </div>
       ) : null}
 
