@@ -1,4 +1,10 @@
+import {
+  capacitatCaixesCamio,
+  escalarLiniesPerCapacitatCaixes,
+} from '@/domain/palletPacking'
 import type { LiniaDistribucio } from '@/domain/palletPacking'
+
+import type { TipusCamio } from '@/models/Camio'
 
 import { getLiniesDistribucioMock } from '@/data/mockDistribucio'
 import { getSupabaseBrowser, isSupabaseConfigured } from '@/lib/supabaseClient'
@@ -18,6 +24,15 @@ export type OrigenLiniesDistribucio = 'supabase' | 'mock'
 export type ResultatLiniesDistribucio = {
   linies: LiniaDistribucio[]
   origen: OrigenLiniesDistribucio
+}
+
+/** Acota el volum total (caixes equivalents) a la capacitat del camió sense mock «desbordat». */
+function aplicarCapacitatSiCal(
+  linies: LiniaDistribucio[],
+  tipusCamio: TipusCamio | null | undefined,
+): LiniaDistribucio[] {
+  if (tipusCamio == null) return linies
+  return escalarLiniesPerCapacitatCaixes(linies, capacitatCaixesCamio(tipusCamio))
 }
 
 function hashRutaId(id: string): number {
@@ -91,10 +106,11 @@ export async function fetchLiniesDistribucioAmbOrigen(
   totalParades: number = 0,
   transporteId: number | null = null,
   ordreEntregues: readonly OrdreEntregaRuta[] | null = null,
+  tipusCamio: TipusCamio | null = null,
 ): Promise<ResultatLiniesDistribucio> {
   if (!isSupabaseConfigured()) {
     return {
-      linies: getLiniesDistribucioMock(rutaId, totalParades),
+      linies: aplicarCapacitatSiCal(getLiniesDistribucioMock(rutaId, totalParades), tipusCamio),
       origen: 'mock',
     }
   }
@@ -120,12 +136,15 @@ export async function fetchLiniesDistribucioAmbOrigen(
   }
   if (linies.length === 0) {
     return {
-      linies: getLiniesDistribucioMock(rutaId, totalParades),
+      linies: aplicarCapacitatSiCal(getLiniesDistribucioMock(rutaId, totalParades), tipusCamio),
       origen: 'mock',
     }
   }
 
-  return { linies, origen: 'supabase' }
+  return {
+    linies: aplicarCapacitatSiCal(linies, tipusCamio),
+    origen: 'supabase',
+  }
 }
 
 export async function fetchLiniesDistribucio(
@@ -133,7 +152,14 @@ export async function fetchLiniesDistribucio(
   totalParades: number = 0,
   transporteId: number | null = null,
   ordreEntregues: readonly OrdreEntregaRuta[] | null = null,
+  tipusCamio: TipusCamio | null = null,
 ): Promise<LiniaDistribucio[]> {
-  const { linies } = await fetchLiniesDistribucioAmbOrigen(rutaId, totalParades, transporteId, ordreEntregues)
+  const { linies } = await fetchLiniesDistribucioAmbOrigen(
+    rutaId,
+    totalParades,
+    transporteId,
+    ordreEntregues,
+    tipusCamio,
+  )
   return linies
 }

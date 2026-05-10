@@ -2,7 +2,11 @@
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react'
 
 import truckImg from '@/assets/img/truck_top.png'
-import { CAIXES_PER_PALLET, paletsMaximsPerTipus } from '@/domain/palletPacking'
+import {
+  CAIXES_PER_PALLET,
+  densitatKgPerCaixaEq,
+  paletsMaximsPerTipus,
+} from '@/domain/palletPacking'
 import type { FragmentPalet, PaletOmplert, PlaCarrega } from '@/domain/palletPacking'
 import type { TipusCamio } from '@/models/Camio'
 
@@ -47,6 +51,14 @@ function celdaGrid(ordre: number, cols: number, rows: number) {
 
 function paletPerOrdre(pla: PlaCarrega, nPalets: number, ordre: number): PaletOmplert {
   return pla.palets.find((p) => nPalets - p.index === ordre) ?? pla.palets[ordre - 1]
+}
+
+/**
+ * Vista de la pila (dalt del tot → terra): invers de l’ordre d’emmagatzematge
+ * (fragment[0] = base del palet amb barrils/densitat ja ordenats).
+ */
+function fragmentsPerVistaPilaDesDeDalt(frags: FragmentPalet[]): FragmentPalet[] {
+  return [...frags].reverse()
 }
 
 /** Nom de producte llegible (mai mostrar `material_id` com si fos nom). */
@@ -122,8 +134,8 @@ function CeldaPalet({
   const senseMercaderiaAqui = filtreParada && fragsMostrats.length === 0
   const buitTotal = encaraAlCamio.length === 0
   const buit = fragsMostrats.length === 0
-  const vols = fragsMostrats.map((f) => Math.max(0.05, f.volumCaixes / CAIXES_PER_PALLET))
-  const sumV = vols.reduce((a, b) => a + b, 0) || 1
+  const fragsVistaPila = fragmentsPerVistaPilaDesDeDalt(fragsMostrats)
+  const vols = fragsVistaPila.map((f) => Math.max(0.05, f.volumCaixes / CAIXES_PER_PALLET))
 
   const destacatEntrega = filtreParada && fragsMostrats.length > 0
   const ringClass = senseMercaderiaAqui
@@ -161,19 +173,26 @@ function CeldaPalet({
       {/* Vora palet */}
       <div className="pointer-events-none absolute inset-0 rounded-md border-2 border-[#7A4820]/50" />
 
-      {/* Càrrega apilada: base a baix -> capes cap amunt */}
+      {/* Càrrega apilada (sense etiquetes dalt/baix — només al modal de detall). */}
       {!buit && (
-        <div className="pointer-events-none absolute inset-[7%] bottom-[10%] z-[2] flex items-end justify-center">
-          <div className="flex h-[84%] w-[78%] flex-col-reverse gap-[3px]">
-            {fragsMostrats.map((frag, j) => {
+        <div className="pointer-events-none absolute inset-[8%] bottom-[10%] z-[2] flex flex-col justify-end">
+          <div className="flex min-h-0 h-full w-full flex-col gap-[2px]">
+            {fragsVistaPila.map((frag, j) => {
               const cat = catCarrega(frag)
               const color = CAT_COLOR[cat]
-              const hPct = Math.max(9, (vols[j]! / sumV) * 100)
+              const d = densitatKgPerCaixaEq(frag)
               return (
                 <div
                   key={`${frag.paradaIndex}-${frag.producteId}-${j}`}
-                  className="relative w-full overflow-hidden rounded-[3px]"
-                  style={{ height: `${hPct}%`, background: color, opacity: 0.8 }}
+                  className="relative w-full min-h-[4px] overflow-hidden rounded-[3px]"
+                  style={{
+                    flexGrow: vols[j],
+                    flexShrink: 1,
+                    flexBasis: 0,
+                    background: color,
+                    opacity: 0.88,
+                  }}
+                  title={`${cat} · ~${d.toFixed(1)} kg/caixa eq.`}
                 >
                   {cat === 'barril' && (
                     <div className="absolute inset-0 flex items-center justify-center">
@@ -225,6 +244,8 @@ function ModalDetall({
   paradaEntregaIndex?: number
   paradesCompletades?: ReadonlySet<number>
 }) {
+  const [fragmentResaltatIndex, setFragmentResaltatIndex] = useState<number | null>(null)
+
   useEffect(() => {
     const fn = (e: KeyboardEvent) => { if (e.key === 'Escape') onTancar() }
     window.addEventListener('keydown', fn)
@@ -265,48 +286,64 @@ function ModalDetall({
           </button>
         </div>
         <div className="mt-4 grid grid-cols-[260px_1fr] gap-4">
-          <div>
-            <div className="mb-1.5 flex justify-between text-[0.62rem] font-semibold uppercase tracking-wider text-slate-400">
-              <span>Dalt</span>
-              <span>Baix</span>
-            </div>
-            <div className="h-[280px] rounded border border-slate-200 bg-slate-50 p-2 sm:h-[320px]">
+          <div className="flex h-[min(52vh,380px)] flex-col gap-1 sm:h-[360px]">
+            <p className="shrink-0 text-center text-[0.68rem] font-medium leading-snug text-sky-900">
+              ↑ Dalt de la pila{' '}
+              <span className="font-normal text-slate-500">(lleuger — menys kg per caixa equivalent)</span>
+            </p>
+            <div className="min-h-0 flex flex-1 flex-col rounded border border-slate-200 bg-slate-50 p-2">
               {totsFrags.length === 0 ? (
                 <p className="text-sm text-slate-500">Sense càrrega en aquest palet.</p>
               ) : (
-                <div className="flex h-full w-full items-end justify-center">
-                  <div className="flex h-full w-[82%] flex-col-reverse gap-[3px] rounded-sm border border-slate-300 bg-white p-[3px]">
-                    {totsFrags.map((f, i) => {
-                      const cat = catCarrega(f)
-                      const part = Math.max(0.05, f.volumCaixes / CAIXES_PER_PALLET) / sumRel
-                      const hPct = Math.max(10, part * 100)
-                      const descarregarAqui =
-                        paradaEntregaIndex !== undefined && f.paradaIndex === paradaEntregaIndex
-                      return (
-                        <div
-                          key={`pila-${palet.index}-${i}`}
-                          className={`relative rounded-[3px] transition-opacity ${
-                            paradaEntregaIndex !== undefined && !descarregarAqui ? 'opacity-[0.38]' : ''
-                          } ${descarregarAqui ? 'ring-2 ring-emerald-600 ring-offset-1' : ''}`}
-                          style={{ height: `${hPct}%`, background: CAT_COLOR[cat] }}
-                        >
-                          {descarregarAqui ? (
-                            <span className="pointer-events-none absolute left-1 top-1 rounded bg-emerald-700 px-1 py-0.5 text-[0.55rem] font-bold uppercase leading-none text-white shadow-sm">
-                              Descarregar
-                            </span>
-                          ) : null}
-                          {cat === 'barril' && (
-                            <div className="pointer-events-none absolute inset-0 flex items-center justify-center">
-                              <div className="h-[72%] aspect-square rounded-full border border-white/35 bg-black/10" />
-                            </div>
-                          )}
-                        </div>
-                      )
-                    })}
-                  </div>
+                <div className="flex min-h-0 flex-1 flex-col gap-[3px]">
+                  {fragmentsPerVistaPilaDesDeDalt(totsFrags).map((f, i) => {
+                    const cat = catCarrega(f)
+                    const partRel = Math.max(0.05, f.volumCaixes / CAIXES_PER_PALLET) / sumRel
+                    const descarregarAqui =
+                      paradaEntregaIndex !== undefined && f.paradaIndex === paradaEntregaIndex
+                    const d = densitatKgPerCaixaEq(f)
+                    const idxTots = totsFrags.indexOf(f)
+                    const esResaltat = fragmentResaltatIndex !== null && fragmentResaltatIndex === idxTots
+                    const altresApagats =
+                      fragmentResaltatIndex !== null && fragmentResaltatIndex !== idxTots
+                    return (
+                      <div
+                        key={`pila-${palet.index}-${i}`}
+                        className={`relative min-h-[8px] cursor-pointer rounded-[3px] transition-all duration-150 ${
+                          paradaEntregaIndex !== undefined && !descarregarAqui ? 'opacity-[0.38]' : ''
+                        } ${descarregarAqui ? 'ring-2 ring-emerald-600 ring-offset-1' : ''} ${
+                          altresApagats ? '!opacity-[0.28]' : ''
+                        } ${esResaltat ? 'z-[8] scale-[1.03] shadow-lg ring-[3px] ring-slate-900 ring-offset-2 !opacity-100' : ''}`}
+                        style={{
+                          flexGrow: partRel,
+                          flexShrink: 1,
+                          flexBasis: 0,
+                          background: CAT_COLOR[cat],
+                        }}
+                        title={`~${d.toFixed(1)} kg/caixa eq.`}
+                        onMouseEnter={() => setFragmentResaltatIndex(idxTots)}
+                        onMouseLeave={() => setFragmentResaltatIndex(null)}
+                      >
+                        {descarregarAqui ? (
+                          <span className="pointer-events-none absolute left-1 top-1 z-[1] rounded bg-emerald-700 px-1 py-0.5 text-[0.55rem] font-bold uppercase leading-none text-white shadow-sm">
+                            Descarregar
+                          </span>
+                        ) : null}
+                        {cat === 'barril' && (
+                          <div className="pointer-events-none absolute inset-0 flex items-center justify-center">
+                            <div className="h-[72%] aspect-square rounded-full border border-white/35 bg-black/10" />
+                          </div>
+                        )}
+                      </div>
+                    )
+                  })}
                 </div>
               )}
             </div>
+            <p className="shrink-0 border-t border-amber-900/25 pt-1 text-center text-[0.68rem] font-semibold leading-snug text-amber-950">
+              ↓ Base del palet{' '}
+              <span className="font-normal text-slate-600">(més pesat per caixa — inclòs barrils densos)</span>
+            </p>
           </div>
 
           <div className="max-h-[min(52vh,380px)] space-y-3 overflow-y-auto pr-1">
@@ -319,38 +356,67 @@ function ModalDetall({
                 const qInfo = etiquetaQuantitat(f)
                 const descarregarAqui =
                   paradaEntregaIndex !== undefined && f.paradaIndex === paradaEntregaIndex
+                const idxTots = totsFrags.indexOf(f)
+                const cat = catCarrega(f)
+                const colorCat = CAT_COLOR[cat]
+                const esResaltat =
+                  fragmentResaltatIndex !== null && fragmentResaltatIndex === idxTots
                 return (
                   <div
-                    className={`rounded-lg border px-3 py-2.5 ${
+                    className={`flex gap-3 rounded-lg border px-3 py-2.5 transition-all duration-150 ${
                       paradaEntregaIndex !== undefined
                         ? descarregarAqui
                           ? 'border-emerald-400 bg-emerald-50/90 shadow-sm'
                           : 'border-slate-200 bg-slate-100/70 opacity-80'
                         : 'border-slate-200 bg-slate-50/80'
-                    }`}
+                    } ${esResaltat ? 'border-slate-900 bg-white shadow-md ring-2 ring-slate-900/25' : ''}`}
                     key={`detall-${palet.index}-${i}-${f.producteId}-${f.paradaIndex}`}
+                    onMouseEnter={() => setFragmentResaltatIndex(idxTots)}
+                    onMouseLeave={() => setFragmentResaltatIndex(null)}
                   >
-                    {paradaEntregaIndex !== undefined ? (
-                      <p className="mb-2 text-[0.65rem] font-bold uppercase tracking-wide">
-                        {descarregarAqui ? (
-                          <span className="text-emerald-800">Descarregar en aquest punt</span>
-                        ) : (
-                          <span className="text-slate-500">Altres entregues — mantenir al camió</span>
-                        )}
+                    <div
+                      aria-hidden
+                      className="mt-0.5 shrink-0 rounded-md shadow-inner"
+                      style={{
+                        width: '10px',
+                        alignSelf: 'stretch',
+                        minHeight: '3rem',
+                        background: colorCat,
+                        boxShadow: `inset 0 0 0 1px rgba(0,0,0,0.06)`,
+                      }}
+                      title={CAT_LABEL[cat]}
+                    />
+                    <div className="min-w-0 flex-1">
+                      {paradaEntregaIndex !== undefined ? (
+                        <p className="mb-2 text-[0.65rem] font-bold uppercase tracking-wide">
+                          {descarregarAqui ? (
+                            <span className="text-emerald-800">Descarregar en aquest punt</span>
+                          ) : (
+                            <span className="text-slate-500">Altres entregues — mantenir al camió</span>
+                          )}
+                        </p>
+                      ) : null}
+                      <div className="mb-1 flex flex-wrap items-center gap-x-2 gap-y-0.5">
+                        <span
+                          className="inline-flex items-center rounded-full px-2 py-0.5 text-[0.65rem] font-semibold uppercase tracking-wide text-white shadow-sm"
+                          style={{ background: colorCat }}
+                        >
+                          {CAT_LABEL[cat]}
+                        </span>
+                      </div>
+                      <p className="text-sm text-slate-900">
+                        <span className="text-slate-500">Producte:</span>{' '}
+                        <span className="font-medium">{nom}</span>
                       </p>
-                    ) : null}
-                    <p className="text-sm text-slate-900">
-                      <span className="text-slate-500">Producte:</span>{' '}
-                      <span className="font-medium">{nom}</span>
-                    </p>
-                    <p className="mt-1.5 text-sm text-slate-900">
-                      <span className="text-slate-500">Client:</span>{' '}
-                      <span className="font-medium">{client}</span>
-                    </p>
-                    <p className="mt-1.5 text-sm text-slate-900">
-                      <span className="text-slate-500">{qInfo.label}:</span>{' '}
-                      <span className="font-medium">{qInfo.valor}</span>
-                    </p>
+                      <p className="mt-1.5 text-sm text-slate-900">
+                        <span className="text-slate-500">Client:</span>{' '}
+                        <span className="font-medium">{client}</span>
+                      </p>
+                      <p className="mt-1.5 text-sm text-slate-900">
+                        <span className="text-slate-500">{qInfo.label}:</span>{' '}
+                        <span className="font-medium">{qInfo.valor}</span>
+                      </p>
+                    </div>
                   </div>
                 )
               })
@@ -454,7 +520,7 @@ export function DistribuidoraCamioPla2D({
         </div>
       )}
 
-      <div className="relative mx-auto flex w-fit items-center gap+0">
+      <div className="relative mx-auto flex w-fit items-center gap-0">
         <div className="shrink-0" style={{ width: `${cabinaWidth}px`, height: `${boxHeight}px` }}>
           <img alt="Cabina del camió (vista superior)" className="h-full w-full object-contain" src={truckImg} />
         </div>
@@ -499,7 +565,7 @@ export function DistribuidoraCamioPla2D({
       className={`relative mx-auto h-full min-h-0 w-full max-w-full rounded-2xl bg-[#F0E9DF] ${paddingCaixa} ${
         encaixaSenseScroll
           ? 'flex flex-1 flex-col items-center justify-center overflow-hidden'
-          : 'w-fit overflow-auto'
+          : 'flex flex-col items-center overflow-x-auto'
       }`}
     >
       {encaixaSenseScroll ? (

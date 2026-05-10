@@ -26,6 +26,7 @@ export function useCamioDistribucio(camio: Camio) {
           ruta.parades.length,
           ruta.transporteId,
           ruta.ordreEntregues,
+          camio.tipus,
         )
         if (cancelled) return
         camio.actualitzarDistribucio(res.linies)

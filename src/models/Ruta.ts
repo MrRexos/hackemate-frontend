@@ -12,6 +12,8 @@ export type ParadaRuta = {
   lng: number
   /** Hora aproximada d’arribada (simulació), p. ex. "08:45". */
   horaArribadaAprox: string
+  /** Opcional (BD / identificador client per parada). */
+  clienteId?: string
 }
 
 /**

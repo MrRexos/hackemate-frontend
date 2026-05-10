@@ -6,5 +6,11 @@ export type {
   PlaCarrega,
   UnitatVolum,
 } from './types'
-export { planificarCarregaPalets } from './planCarregaPalets'
+export { indicesPaletsOmplimentDesDeCabina, planificarCarregaPalets } from './planCarregaPalets'
 export { quantitatFisicaDesDeVolumCaixes, volumEnCaixes } from './volum'
+export {
+  capacitatCaixesCamio,
+  escalarLiniesPerCapacitatCaixes,
+  volumTotalLiniesEnCaixes,
+} from './escalaLiniesCapacitatCamio'
+export { compararFragmentPerBasePrimer, densitatKgPerCaixaEq } from './densitatFragment'

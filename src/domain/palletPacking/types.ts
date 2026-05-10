@@ -25,6 +25,8 @@ export type FragmentPalet = {
   paradaNom: string
   producteId: string
   producteNom: string
+  /** Codi de material (catàleg `materials.json`); per densitat kg/caixa a la pila. */
+  materialId?: string
   materialNom: string
   /** Unitat de la línia d’origen (per llegenda visual caixa / llauna / barril). */
   unitat?: UnitatVolum
@@ -37,11 +39,14 @@ export type FragmentPalet = {
 }
 
 export type PaletOmplert = {
-  /** 0 = davant del camió (primera entrega); últim índex = darrere (última entrega). */
+  /**
+   * Índex físic al llarg del camió: el més alt és el més proper a la cabina (es carrega primer amb les últimes entregues).
+   * El 0 és el fons cap a la porta de càrrega (primeres entregues de la ruta).
+   */
   index: number
   capacitatCaixes: number
   ocupatCaixes: number
-  /** Ordre d’apilament: primer element = baix del palet, últim = a dalt. */
+  /** Ordre d’apilament (emmagatzematge): índex 0 = base del palet (més kg/caixa eq.); l’últim = a dalt. La vista UI pot mostrar la pila de dalt a baix. */
   fragments: FragmentPalet[]
 }
 

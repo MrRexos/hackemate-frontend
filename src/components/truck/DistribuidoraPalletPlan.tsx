@@ -38,7 +38,7 @@ export function DistribuidoraPalletPlan({ camio }: Props) {
   }
 
   return (
-    <div className="w-full">
+    <div className="flex w-full max-w-full justify-center">
       <DistribuidoraCamioPla2D pla={pla} teDesbordament={pla.teDesbordament} tipusCamio={camio.tipus} />
     </div>
   )

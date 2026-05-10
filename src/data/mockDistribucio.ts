@@ -4,6 +4,7 @@ import type { LiniaDistribucio } from '@/domain/palletPacking'
  * Entrades manuals opcionals per ruta (demo). Si la ruta no hi és, es generen línies genèriques
  * per totes les parades d’entrega amb diverses referències cadascuna.
  * Regles de volum: 60 caixes/palet; 1 caixa = 24 llaunes; 1 barril = 4 caixes.
+ * El volum total s’ajusta després a la capacitat del camió (`escalarLiniesPerCapacitatCaixes` a `distribucioApi`).
  */
 const MOCK_PER_RUTA: Record<string, LiniaDistribucio[]> = {}
 
@@ -18,7 +19,8 @@ function liniesGeneriquesPerRuta(rutaId: string, nParadesEntrega: number): Linia
     const nLiniesParada = 3 + ((base + i * 5) % 4)
     for (let j = 0; j < nLiniesParada; j++) {
       const unitat = unitats[(base + i + j) % 3]
-      const q = 6 + ((base + i * 11 + j * 3) % 28)
+      /** Quantitats moderades; l’API escala el conjunt al volum del tipus de camió (gran/mitjà/petit). */
+      const q = 4 + ((base + i * 11 + j * 3) % 18)
       out.push({
         paradaIndex,
         producteId: `P-GEN-${rutaId}-${i}-${j}`,

@@ -78,36 +78,41 @@ export function TruckConductorPanel({ camio }: Props) {
 
   useEffect(() => {
     const r = camio.ruta
-    if (!r) {
-      setLiniesDistribucio(null)
-      setDistribucioError(null)
-      return
-    }
+    if (!r) return
+
     let cancelled = false
-    setLiniesDistribucio(null)
-    setDistribucioError(null)
-    void (async () => {
-      try {
-        const { linies } = await fetchLiniesDistribucioAmbOrigen(
+    void Promise.resolve()
+      .then(() => {
+        if (cancelled) return
+        setLiniesDistribucio(null)
+        setDistribucioError(null)
+      })
+      .then(() => {
+        if (cancelled) return
+        return fetchLiniesDistribucioAmbOrigen(
           r.id,
           r.parades.length,
           r.transporteId ?? null,
           r.ordreEntregues ?? null,
+          camio.tipus,
         )
-        if (!cancelled) {
-          setLiniesDistribucio(linies)
-        }
-      } catch (e: unknown) {
-        if (!cancelled) {
-          setDistribucioError(e instanceof Error ? e.message : 'No s’han pogut carregar les línies.')
-          setLiniesDistribucio([])
-        }
-      }
-    })()
+      })
+      .then((res) => {
+        if (cancelled || !res) return
+        camio.actualitzarDistribucio(res.linies)
+        setLiniesDistribucio(res.linies)
+      })
+      .catch((e: unknown) => {
+        if (cancelled) return
+        setDistribucioError(e instanceof Error ? e.message : 'No s’han pogut carregar les línies.')
+        camio.actualitzarDistribucio([])
+        setLiniesDistribucio([])
+      })
+
     return () => {
       cancelled = true
     }
-  }, [camio.ruta])
+  }, [camio.codi, camio.ruta?.id, camio])
 
   const liniesModalEntrega = useMemo(() => {
     if (!deliveryModal || !liniesDistribucio?.length) return []

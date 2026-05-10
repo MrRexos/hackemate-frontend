@@ -1,7 +1,9 @@
 import type { TipusCamio } from '@/models/Camio'
 import type { ParadaRuta } from '@/models/Ruta'
+import { pesCaixaMaterialSiExisteix } from '@/data/materialsPesCaixa'
 import { esParadaMagatzem } from '@/utils/paradaMap'
 
+import { compararFragmentPerBasePrimer } from './densitatFragment'
 import { CAIXES_PER_PALLET, paletsMaximsPerTipus } from './constants'
 import type { FragmentPalet, LiniaDistribucio, PaletOmplert, PlaCarrega } from './types'
 import { quantitatFisicaDesDeVolumCaixes, volumEnCaixes } from './volum'
@@ -19,16 +21,30 @@ function liniesAmbVolum(linies: LiniaDistribucio[]): LiniaAmbVolum[] {
   return linies.map((l) => {
     const volumTotalCaixes = volumEnCaixes(l.quantitat, l.unitat)
     const pesTotalKg = l.quantitat * l.pesKgPerUnitat
-    const pesPerCaixaEq = volumTotalCaixes > EPS ? pesTotalKg / volumTotalCaixes : 0
+    const perFragment = volumTotalCaixes > EPS ? pesTotalKg / volumTotalCaixes : 0
+    const catalog = pesCaixaMaterialSiExisteix(l.materialId)
+    const pesPerCaixaEq =
+      catalog != null && catalog > 0 ? Math.max(perFragment, catalog) : perFragment
     return { ...l, volumTotalCaixes, pesTotalKg, pesPerCaixaEq }
   })
 }
 
 /**
- * Pla de carrega: omple des del darrere del camió cap al davant.
- * Per cada parada es processa en ordre invers a la ruta (última entrega primer).
- * Dins cada parada, les línies es col·loquen per densitat (kg/caixa eq., descendent): més dens a la base del palet.
- * Es reutilitza l’espai lliure del palet actual abans de passar al següent (cap al davant).
+ * Ordre d’índex de palet en què s’omple el camió: primer els més propers a la cabina
+ * (parell visual 1–2, després 3–4, …), fins al fons (primera entrega de la ruta).
+ */
+export function indicesPaletsOmplimentDesDeCabina(nPalets: number): number[] {
+  return Array.from({ length: nPalets }, (_, i) => nPalets - 1 - i)
+}
+
+/**
+ * Pla de càrrega optimitzat:
+ * - Palets segons tipus de camió (gran 8, mitjà 6, petit 3); 60 caixes per palet.
+ * - Es processen les entregues en ordre invers al de la ruta (última parada primer) per col·locar-les
+ *   des dels palets més propers a la cabina cap al fons (primera entrega de la ruta al darrere del camió).
+ * - Ordre d’ompliment dels palets: primer el més proper a la cabina, el segon de la fila, després el parell següent…
+ *   Si un palet no té prou espai, es continua al següent (sense tornar enrere).
+ * - Dins cada palet, fragments ordenats per densitat (kg/caixa): més dens a la base de la pila.
  */
 export function planificarCarregaPalets(
   parades: readonly ParadaRuta[],
@@ -67,6 +83,7 @@ export function planificarCarregaPalets(
     arr.sort((a, b) => b.pesPerCaixaEq - a.pesPerCaixaEq)
   }
 
+  /** Palet actiu: comença pel més proper a la cabina (índex més alt). */
   let p = nPalets - 1
   let desbord = 0
 
@@ -98,6 +115,7 @@ export function planificarCarregaPalets(
           paradaNom,
           producteId: linia.producteId,
           producteNom: linia.producteNom,
+          materialId: linia.materialId,
           materialNom: linia.materialNom,
           unitat: linia.unitat,
           volumCaixes: hiCap,
@@ -120,11 +138,7 @@ export function planificarCarregaPalets(
 
   for (const palet of palets) {
     if (palet.fragments.length <= 1) continue
-    palet.fragments.sort((a, b) => {
-      const ra = a.volumCaixes > EPS ? a.pesKg / a.volumCaixes : 0
-      const rb = b.volumCaixes > EPS ? b.pesKg / b.volumCaixes : 0
-      return rb - ra
-    })
+    palet.fragments.sort(compararFragmentPerBasePrimer)
   }
 
   return {
