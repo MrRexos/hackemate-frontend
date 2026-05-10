@@ -1,51 +1,50 @@
+import { useState } from 'react'
+import type { FormEvent } from 'react'
+import { useNavigate } from 'react-router-dom'
+
 import { Button } from '@/components/ui/Button'
-import { Container } from '@/components/ui/Container'
-import { starterFeatures } from '@/data/starterFeatures'
 import { useDocumentTitle } from '@/hooks/useDocumentTitle'
-import { siteConfig } from '@/lib/site'
 
 export function HomePage() {
-  useDocumentTitle(`${siteConfig.name} | Base del hackathon`)
+  const [truckCode, setTruckCode] = useState('')
+  const navigate = useNavigate()
+
+  useDocumentTitle('Buscador de camions')
+
+  const handleSubmit = (event: FormEvent<HTMLFormElement>) => {
+    event.preventDefault()
+    const normalizedCode = truckCode.trim().toUpperCase()
+    if (!normalizedCode) return
+    navigate(`/camio/${normalizedCode}`)
+  }
 
   return (
-    <Container className="py-16 sm:py-20">
-      <section className="grid gap-12 lg:grid-cols-[1.1fr_0.9fr] lg:items-center" id="features">
-        <div className="max-w-2xl">
-          <h1 className="text-4xl font-bold leading-tight text-ink sm:text-5xl">
-            Base lista para construir rápido cuando empiece el reto.
-          </h1>
-          <p className="mt-5 text-lg leading-8 text-muted">
-            Proyecto inicial con Vite, React, TypeScript, Tailwind CSS y una
-            estructura pensada para crecer sin rehacer la organización.
-          </p>
-          <div className="mt-8 flex flex-col gap-3 sm:flex-row">
-            <Button>OCTAVIO Y MI GLOVO</Button>
-            <Button variant="secondary">PIQUE VOLEM LA SISENA</Button>
-          </div>
-        </div>
+    <div className="flex min-h-0 w-full flex-1 flex-col items-center justify-center overscroll-none px-4 py-0">
+      <div className="w-full max-w-[17.5rem] text-center sm:max-w-xs">
+        <h1 className="text-2xl font-semibold leading-tight text-slate-900 sm:text-[1.75rem]">
+           CODI DEL CAMIÓ
+        </h1>
 
-        <div className="rounded-2xl border border-slate-200 bg-white p-6 shadow-sm" id="stack">
-          <p className="text-sm font-semibold text-brand-600">Stack inicial</p>
-          <ul className="mt-5 space-y-4">
-            {starterFeatures.map((feature) => (
-              <li className="rounded-xl bg-slate-50 p-4" key={feature.title}>
-                <h2 className="font-semibold text-ink">{feature.title}</h2>
-                <p className="mt-1 text-sm leading-6 text-muted">{feature.description}</p>
-              </li>
-            ))}
-          </ul>
-        </div>
-      </section>
+        <form className="mt-12 space-y-6" onSubmit={handleSubmit}>
+          <label className="sr-only" htmlFor="truck-code">
+            CODI DEL CAMIÓ
+          </label>
+          <input
+            autoComplete="off"
+            className="w-full border-0 border-b border-slate-300 bg-transparent py-3 text-center text-2xl font-semibold  tracking-[0.28em] text-slate-900 placeholder:tracking-normal placeholder:text-slate-400 focus:border-slate-700 focus:outline-none focus:ring-0"
+            id="truck-code"
+            onChange={(event) => setTruckCode(event.target.value.toUpperCase())}
+            placeholder="Introdueix el codi aquí"
+            required
+            type="text"
+            value={truckCode}
+          />
 
-      <section className="mt-16 rounded-2xl border border-slate-200 bg-white p-6 shadow-sm" id="roadmap">
-        <h2 className="text-xl font-semibold text-ink">Siguientes pasos</h2>
-        <p className="mt-3 max-w-3xl leading-7 text-muted">
-          Cuando se conozca el reto, esta base ya permite añadir rutas, integrar APIs,
-          crear componentes concretos y desplegar en Vercel sin rehacer el setup.
-        </p>
-      </section>
-    </Container>
+          <Button size="full" type="submit" variant="primary">
+            Obrir fitxa
+          </Button>
+        </form>
+      </div>
+    </div>
   )
 }
-
-

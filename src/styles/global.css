@@ -23,10 +23,26 @@
 body {
   margin: 0;
   min-width: 320px;
-  min-height: 100vh;
+  min-height: 100dvh;
+  overflow-x: hidden;
 }
 
 button,
 a {
   -webkit-tap-highlight-color: transparent;
+}
+
+/* Marcadors OSRM amb L.divIcon (sense fons blanc per defecte de Leaflet) */
+.leaflet-parada-marker-hackemate {
+  background: transparent !important;
+  border: none !important;
+}
+
+/* Scroll sense barra visible (la rodeta / touch segueix funcionant) */
+.scrollbar-hide {
+  -ms-overflow-style: none;
+  scrollbar-width: none;
+}
+.scrollbar-hide::-webkit-scrollbar {
+  display: none;
 }
