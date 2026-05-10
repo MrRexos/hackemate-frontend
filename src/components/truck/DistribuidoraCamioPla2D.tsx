@@ -12,7 +12,7 @@ import {
   densitatKgPerCaixaEq,
   paletsMaximsPerTipus,
 } from '@/domain/palletPacking'
-import type { FragmentPalet, PaletOmplert, PlaCarrega } from '@/domain/palletPacking'
+import type { FragmentPalet, PaletOmplert, PisPlaEmmagatzematge, PlaCarrega } from '@/domain/palletPacking'
 import type { TipusCamio } from '@/models/Camio'
 
 /* ─── Types ──────────────────────────────────────────────────────────────── */
@@ -124,6 +124,82 @@ const PALLET3D_PISOS = 5
 const MOSAIC_CELLS = PALLET3D_AMPLADA * PALLET3D_FONDARIA * PALLET3D_PISOS
 const CELLES_PER_PIS = PALLET3D_AMPLADA * PALLET3D_FONDARIA
 
+/** Vista per pis amb barrils: 2 columnes × 3 files = 6 ranures (1 barril vertical o fins 2 caixes eq. per ranura buida). */
+const BARRIL_VISTA_COLS = 2
+const BARRIL_VISTA_FILES = 3
+const BARRIL_VISTA_SLOTS = BARRIL_VISTA_COLS * BARRIL_VISTA_FILES
+/** Màx. caixes eq. per ranura quan només hi ha caixes (12 totals / 6). */
+const CAIXES_EQ_MAX_PER_RANURA_SENSE_BARRIL = VOLUM_CAIXES_EQ_MAX_PER_PIS / BARRIL_VISTA_SLOTS
+
+const EPS_PIS = 1e-6
+
+/** Si el palet té barrils en qualsevol pis, la representació per pisos és sempre 2×3 (6), mai 3×4 (12). */
+function paletConteAlgunBarril(planPisos: readonly PisPlaEmmagatzematge[]): boolean {
+  return planPisos.some(
+    (p) => p.barrilsQueTocquen > EPS_PIS || p.volumBarrilsCaixesEq > EPS_PIS,
+  )
+}
+
+function barrilsTocquenPis(planPisos: readonly PisPlaEmmagatzematge[] | undefined, pis: number): number {
+  return Math.min(BARRILS_MAX_PER_PIS, Math.max(0, planPisos?.[pis]?.barrilsQueTocquen ?? 0))
+}
+
+/**
+ * Per cada ranura 0..5 (fila major: dalt→baix, esquerra→dreta): si aquest pis «toca» barril en aquesta columna.
+ * Es fa servir el mateix ordre de ranures entre pisos per modelar continuació vertical (barril de 2 pisos).
+ */
+function mascaraBarrilsPis(planPisos: readonly PisPlaEmmagatzematge[], pisDesDeBase: number): boolean[] {
+  const b = barrilsTocquenPis(planPisos, pisDesDeBase)
+  return Array.from({ length: BARRIL_VISTA_SLOTS }, (_, i) => i < b)
+}
+
+function distribuirCaixesEnRanuresLliures(
+  ocupacioCaixes: number,
+  ranuraTeBarril: boolean[],
+  maxPerRanura = CAIXES_EQ_MAX_PER_RANURA_SENSE_BARRIL,
+): number[] {
+  const out = Array.from({ length: BARRIL_VISTA_SLOTS }, () => 0)
+  const lliures = ranuraTeBarril.map((ocupada, i) => (!ocupada ? i : -1)).filter((i) => i >= 0)
+  let queda = Math.max(0, ocupacioCaixes)
+  for (const i of lliures) {
+    if (queda <= EPS_PIS) break
+    const add = Math.min(maxPerRanura, queda)
+    out[i]! += add
+    queda -= add
+  }
+  return out
+}
+
+type RanuraPisVisual = {
+  teBarrilRanura: boolean
+  contCap: boolean
+  baseNova: boolean
+  caixesAquí: number
+}
+
+/** Estat de les 6 ranures (2×3) per a un pis concret; mateixa convenció entre modal i miniatura. */
+function ranuresVisualsPerPis(
+  planPisos: readonly PisPlaEmmagatzematge[],
+  pisDesDeBase: number,
+): RanuraPisVisual[] {
+  const pla = planPisos[pisDesDeBase]!
+  const bCur = barrilsTocquenPis(planPisos, pisDesDeBase)
+  const bPrev = pisDesDeBase > 0 ? barrilsTocquenPis(planPisos, pisDesDeBase - 1) : 0
+  const teBarrilPis = bCur > 0 || pla.volumBarrilsCaixesEq > EPS_PIS
+  const ranuraTeBarril = teBarrilPis
+    ? mascaraBarrilsPis(planPisos, pisDesDeBase)
+    : Array.from({ length: BARRIL_VISTA_SLOTS }, () => false)
+  const caixesPerRanura = distribuirCaixesEnRanuresLliures(pla.ocupacioCaixes, ranuraTeBarril)
+
+  return Array.from({ length: BARRIL_VISTA_SLOTS }, (_, i) => {
+    const teBarrilRanura = ranuraTeBarril[i]!
+    const contCap = i < bCur && i < bPrev && pisDesDeBase > 0
+    const baseNova = teBarrilRanura && (pisDesDeBase === 0 || i >= bPrev)
+    const caixesAquí = teBarrilRanura ? 0 : caixesPerRanura[i]!
+    return { teBarrilRanura, contCap, baseNova, caixesAquí }
+  })
+}
+
 /**
  * Nombre de cel·les per fragment = volum en caixes eq. (arrodonit). Un barril amb `volumCaixes` 4 → 4 cel·les.
  * Si l’arrodoniment supera la capacitat del palet, s’escala proporcionalment (cas desbordament).
@@ -192,6 +268,174 @@ function construirPalet3DPisos(
   return pisos
 }
 
+/* ─── Vista 2×3 pis amb barrils (modal) ───────────────────────────────────── */
+
+function SubquadratsCaixesRanura({
+  caixesAquí,
+  colorCaixa,
+}: {
+  caixesAquí: number
+  colorCaixa: string
+}) {
+  const ple1 = caixesAquí >= 1 - EPS_PIS
+  const ple2 = caixesAquí >= 2 - EPS_PIS
+  return (
+    <div className="flex h-full w-full flex-col gap-px px-[8%] py-[8%]">
+      <div
+        className="flex min-h-0 flex-1 flex-col gap-px overflow-hidden rounded-[3px] border border-black/20"
+        title="Quadrat subdividit: fins a 2 caixes eq. (1 a cada meitat)"
+      >
+        <div
+          className="min-h-0 flex-1 rounded-t-[2px] border-b border-black/15"
+          style={{
+            background: ple1 ? colorCaixa : '#D4C4A8',
+            opacity: ple1 ? 0.92 : 0.35,
+          }}
+        />
+        <div
+          className="min-h-0 flex-1 rounded-b-[2px]"
+          style={{
+            background: ple2 ? colorCaixa : '#D4C4A8',
+            opacity: ple2 ? 0.92 : 0.35,
+          }}
+        />
+      </div>
+    </div>
+  )
+}
+
+function GraellaPisBarrilsICaixes({
+  planPisos,
+  pisDesDeBase,
+  paletIndex,
+  colorBarril,
+  colorCaixa,
+}: {
+  planPisos: readonly PisPlaEmmagatzematge[]
+  pisDesDeBase: number
+  paletIndex: number
+  colorBarril: string
+  colorCaixa: string
+}) {
+  const pla = planPisos[pisDesDeBase]!
+  const bCur = barrilsTocquenPis(planPisos, pisDesDeBase)
+  const algunBarrilAlPalet = paletConteAlgunBarril(planPisos)
+  const teBarrilPis = bCur > 0 || pla.volumBarrilsCaixesEq > EPS_PIS
+  const ranures = ranuresVisualsPerPis(planPisos, pisDesDeBase)
+
+  if (!algunBarrilAlPalet && !teBarrilPis) {
+    const nCaixesVisual = Math.min(
+      CELLES_PER_PIS,
+      Math.max(0, Math.round(pla.ocupacioCaixes)),
+    )
+    return (
+      <div className="w-full max-w-[220px] space-y-2">
+        <p className="text-center text-[0.58rem] font-semibold uppercase tracking-wide text-slate-600">
+          Només caixes / llaunes (3×4)
+        </p>
+        <div
+          className="grid aspect-[3/4] w-full gap-0.5 rounded border border-[#7A4820]/40 bg-[#E8DCC4] p-1 shadow-inner"
+          style={{
+            gridTemplateColumns: `repeat(${PALLET3D_AMPLADA}, minmax(0, 1fr))`,
+            gridTemplateRows: `repeat(${PALLET3D_FONDARIA}, minmax(0, 1fr))`,
+          }}
+        >
+          {Array.from({ length: CELLES_PER_PIS }, (_, k) => {
+            const ple = k < nCaixesVisual
+            return (
+              <div
+                aria-hidden
+                className="min-h-0 min-w-0 rounded-[2px] border border-black/10"
+                key={`cx-${paletIndex}-p${pisDesDeBase}-${k}`}
+                style={{
+                  background: ple ? colorCaixa : '#D4C4A8',
+                  opacity: ple ? 0.88 : 0.45,
+                }}
+              />
+            )
+          })}
+        </div>
+        <p className="text-center text-[0.58rem] text-slate-600">
+          Caixes assignades al pis (aprox.): {pla.ocupacioCaixes.toFixed(1)} caixes eq.
+        </p>
+      </div>
+    )
+  }
+
+  return (
+    <div className="w-full max-w-[220px] space-y-2">
+      <p className="text-center text-[0.58rem] font-semibold uppercase tracking-wide text-slate-600">
+        Pis 2×3 (6 quadrats): 1 barril per quadrat (mateixa posició al pis de dalt si és vertical); ranura de caixes
+        partida en 2 (fins 2 caixes eq.). Pis 5: barril tombat sense pis 6, mateixa graella.
+      </p>
+      <div
+        className="grid w-full gap-1 rounded border border-[#7A4820]/40 bg-[#E8DCC4] p-1.5 shadow-inner"
+        style={{
+          gridTemplateColumns: `repeat(${BARRIL_VISTA_COLS}, minmax(0, 1fr))`,
+          gridTemplateRows: `repeat(${BARRIL_VISTA_FILES}, minmax(0, 1fr))`,
+          aspectRatio: `${BARRIL_VISTA_COLS} / ${BARRIL_VISTA_FILES}`,
+        }}
+      >
+        {ranures.map((rv, i) => {
+          const { teBarrilRanura, contCap, baseNova, caixesAquí } = rv
+          const pleCaixes = caixesAquí > EPS_PIS
+
+          let aria = `Ranura ${i + 1} buida (2 meitats per caixes)`
+          if (teBarrilRanura) {
+            if (contCap) aria = `Ranura ${i + 1}: barril (continuació des del pis inferior)`
+            else if (baseNova) aria = `Ranura ${i + 1}: base de barril`
+            else aria = `Ranura ${i + 1}: barril`
+          } else if (pleCaixes) {
+            aria = `Ranura ${i + 1}: caixes (~${caixesAquí.toFixed(1)} caixes eq. en 2 meitats)`
+          }
+
+          return (
+            <div
+              aria-label={aria}
+              className="relative flex min-h-[2.25rem] min-w-0 flex-col items-center justify-center rounded-md border border-black/15"
+              key={`br2-${paletIndex}-p${pisDesDeBase}-s${i}`}
+              style={{
+                background: teBarrilRanura ? colorBarril : '#D4C4A8',
+                opacity: teBarrilRanura || pleCaixes ? 0.95 : 0.55,
+              }}
+            >
+              {teBarrilRanura ? (
+                <>
+                  {contCap ? (
+                    <span
+                      className="pointer-events-none absolute inset-x-[8%] top-0 h-[38%] rounded-t-full border border-white/30 bg-black/12"
+                      title="Part alta del barril (mateixa ranura i posició que el pis de sota)"
+                    />
+                  ) : null}
+                  <span
+                    className={`pointer-events-none relative z-[1] w-[58%] rounded-full border border-white/35 bg-black/10 ${
+                      contCap && !baseNova ? 'aspect-square max-h-[55%]' : 'aspect-square max-h-[72%]'
+                    }`}
+                  />
+                  {baseNova && pisDesDeBase < PALLET3D_PISOS - 1 ? (
+                    <span className="pointer-events-none absolute inset-x-[12%] bottom-0.5 text-[0.45rem] font-medium leading-none text-slate-800/90">
+                      2 pisos
+                    </span>
+                  ) : null}
+                </>
+              ) : (
+                <SubquadratsCaixesRanura caixesAquí={caixesAquí} colorCaixa={colorCaixa} />
+              )}
+            </div>
+          )
+        })}
+      </div>
+      <p className="text-center text-[0.58rem] tabular-nums text-slate-700">
+        Barrils que toquen aquest pis: {bCur} / {BARRILS_MAX_PER_PIS} · Volum barrils:{' '}
+        {pla.volumBarrilsCaixesEq.toFixed(1)} / {VOLUM_CAIXES_EQ_MAX_PER_PIS} caixes eq.
+      </p>
+      <p className="text-center text-[0.58rem] text-slate-600">
+        Caixes al pis (forat d’alineació aplicat al repartiment): {pla.ocupacioCaixes.toFixed(1)} caixes eq.
+      </p>
+    </div>
+  )
+}
+
 /* ─── Cel·la palet ───────────────────────────────────────────────────────── */
 
 function CeldaPalet({
@@ -229,6 +473,12 @@ function CeldaPalet({
         ? 'ring-[3px] ring-emerald-600 ring-offset-2'
         : 'hover:ring-2 hover:ring-slate-400/50'
 
+  const vistaPlaPisosAlCamio =
+    !buit &&
+    !filtreParada &&
+    palet.planPisos != null &&
+    palet.planPisos.length === PALLET3D_PISOS
+
   return (
     <button
       className={`group relative h-full w-full overflow-hidden rounded-md outline-none transition-all ${
@@ -256,36 +506,87 @@ function CeldaPalet({
       {/* Vora palet */}
       <div className="pointer-events-none absolute inset-0 rounded-md border-2 border-[#7A4820]/50" />
 
-      {/* Càrrega apilada (sense etiquetes dalt/baix — només al modal de detall). */}
+      {/* Càrrega: pla per pis (2×3) si hi ha dades; si no, vista per fragments. */}
       {!buit && (
         <div className="pointer-events-none absolute inset-[8%] bottom-[10%] z-[2] flex flex-col justify-end">
-          <div className="flex min-h-0 h-full w-full flex-col gap-[2px]">
-            {fragsVistaPila.map((frag, j) => {
-              const cat = catCarrega(frag)
-              const color = CAT_COLOR[cat]
-              const d = densitatKgPerCaixaEq(frag)
-              return (
-                <div
-                  key={`${frag.paradaIndex}-${frag.producteId}-${j}`}
-                  className="relative w-full min-h-[4px] overflow-hidden rounded-[3px]"
-                  style={{
-                    flexGrow: vols[j],
-                    flexShrink: 1,
-                    flexBasis: 0,
-                    background: color,
-                    opacity: 0.88,
-                  }}
-                  title={`${cat} · ~${d.toFixed(1)} kg/caixa eq.`}
-                >
-                  {cat === 'barril' && (
-                    <div className="absolute inset-0 flex items-center justify-center">
-                      <div className="h-[72%] aspect-square rounded-full border border-white/35 bg-black/10" />
-                    </div>
-                  )}
-                </div>
-              )
-            })}
-          </div>
+          {vistaPlaPisosAlCamio ? (
+            <div className="flex min-h-0 h-full w-full flex-col-reverse gap-[2px]">
+              {Array.from({ length: PALLET3D_PISOS }, (_, pisDesDeBase) => {
+                const ranures = ranuresVisualsPerPis(palet.planPisos!, pisDesDeBase)
+                return (
+                  <div
+                    className="grid min-h-[5px] flex-1 grid-cols-2 grid-rows-3 gap-px"
+                    key={`mic-p${palet.index}-${pisDesDeBase}`}
+                  >
+                    {ranures.map((rv, si) => {
+                      const cj = CAT_COLOR.caja
+                      const ple1 = !rv.teBarrilRanura && rv.caixesAquí >= 1 - EPS_PIS
+                      const ple2 = !rv.teBarrilRanura && rv.caixesAquí >= 2 - EPS_PIS
+                      return (
+                        <div
+                          className="relative min-h-0 min-w-0 overflow-hidden rounded-[1px] border border-black/10"
+                          key={`mic-${palet.index}-p${pisDesDeBase}-s${si}`}
+                          style={{
+                            background: rv.teBarrilRanura ? CAT_COLOR.barril : '#C4B498',
+                            opacity: rv.teBarrilRanura || ple1 || ple2 ? 0.92 : 0.45,
+                          }}
+                        >
+                          {rv.teBarrilRanura ? (
+                            <span className="absolute inset-[12%] rounded-full border border-white/25 bg-black/10" />
+                          ) : (
+                            <div className="absolute inset-[1px] flex flex-col gap-px">
+                              <div
+                                className="min-h-0 flex-1 rounded-t-[1px]"
+                                style={{
+                                  background: ple1 ? cj : 'transparent',
+                                  opacity: ple1 ? 0.95 : 0.25,
+                                }}
+                              />
+                              <div
+                                className="min-h-0 flex-1 rounded-b-[1px]"
+                                style={{
+                                  background: ple2 ? cj : 'transparent',
+                                  opacity: ple2 ? 0.95 : 0.25,
+                                }}
+                              />
+                            </div>
+                          )}
+                        </div>
+                      )
+                    })}
+                  </div>
+                )
+              })}
+            </div>
+          ) : (
+            <div className="flex min-h-0 h-full w-full flex-col gap-[2px]">
+              {fragsVistaPila.map((frag, j) => {
+                const cat = catCarrega(frag)
+                const color = CAT_COLOR[cat]
+                const d = densitatKgPerCaixaEq(frag)
+                return (
+                  <div
+                    key={`${frag.paradaIndex}-${frag.producteId}-${j}`}
+                    className="relative w-full min-h-[4px] overflow-hidden rounded-[3px]"
+                    style={{
+                      flexGrow: vols[j],
+                      flexShrink: 1,
+                      flexBasis: 0,
+                      background: color,
+                      opacity: 0.88,
+                    }}
+                    title={`${cat} · ~${d.toFixed(1)} kg/caixa eq.`}
+                  >
+                    {cat === 'barril' && (
+                      <div className="absolute inset-0 flex items-center justify-center">
+                        <div className="h-[72%] aspect-square rounded-full border border-white/35 bg-black/10" />
+                      </div>
+                    )}
+                  </div>
+                )
+              })}
+            </div>
+          )}
         </div>
       )}
 
@@ -385,9 +686,11 @@ function ModalDetall({
                 <>
                   Prioritat barrils: {BARRILS_MAX_PER_PIS} ranures / pis · després caixes al volum que sobra
                   <span className="mt-0.5 block font-normal text-slate-500">
-                    Es divideix el pis en 6 posicions de barril; un cop col·locats, les caixes van al marge restant
-                    (fins {VOLUM_CAIXES_EQ_MAX_PER_PIS} caixes eq. totals / pis, barrils + caixes). 1 barril = 4
-                    caixes eq. al camió; vertical +2/+2 al tall de dos pisos; tombat +2 només al pis 5.
+                    Vista gràfica: si el palet té <span className="font-semibold text-sky-950">cap barril</span>,{' '}
+                    <span className="font-semibold text-sky-950">tots els pisos</span> es divideixen en{' '}
+                    <span className="font-semibold text-sky-950">6 quadrats</span> (2×3), mai en 12 (3×4). Cada barril
+                    ocupa un quadrat i la mateixa posició al pis superior (vertical); al pis 5 un barril tombat usa la
+                    mateixa graella sense pis 6. Quadrat sense barril: es parteix en <span className="font-semibold text-sky-950">2 meitats</span> (fins 2 caixes eq.). Palet només amb caixes: 3×4. 1 barril = 4 caixes eq.
                   </span>
                   <span className="mt-0.5 block font-normal text-slate-500">
                     Caixes: ~{Math.round((1 - FORAT_ALINEACIO_CAIXES) * 100)}% del buit usable es perd per no
@@ -439,12 +742,6 @@ function ModalDetall({
                 {(() => {
                   const pisDesDeBase = pisTab
                   const pla = palet.planPisos![pisDesDeBase]!
-                  const colorBarril = CAT_COLOR.barril
-                  const colorCaixa = CAT_COLOR.caja
-                  const nCaixesVisual = Math.min(
-                    CELLES_PER_PIS,
-                    Math.max(0, Math.round(pla.ocupacioCaixes)),
-                  )
                   return (
                     <div className="flex flex-col items-center gap-2 pt-1">
                       <p className="text-center text-[0.62rem] text-slate-600">
@@ -454,69 +751,17 @@ function ModalDetall({
                             ? 'Pis superior (tombat si cal)'
                             : 'Pis intermedi'}
                       </p>
-                      <p className="text-center text-[0.6rem] tabular-nums text-slate-700">
-                        Volum barrils en aquest pis: {pla.volumBarrilsCaixesEq} / {VOLUM_CAIXES_EQ_MAX_PER_PIS}{' '}
-                        caixes eq. · Ranures: {pla.barrilsQueTocquen} / {BARRILS_MAX_PER_PIS}
-                      </p>
                       <p className="text-center text-[0.58rem] text-slate-600">
                         Marge teòric per caixes (abans forat):{' '}
                         {Math.max(0, VOLUM_CAIXES_EQ_MAX_PER_PIS - pla.volumBarrilsCaixesEq).toFixed(1)} caixes eq.
                       </p>
-                      <div className="w-full max-w-[220px] space-y-2">
-                        <p className="text-center text-[0.58rem] font-semibold uppercase tracking-wide text-slate-600">
-                          Barrils (6 ranures)
-                        </p>
-                        <div className="grid grid-cols-6 gap-1">
-                          {Array.from({ length: BARRILS_MAX_PER_PIS }, (__, i) => {
-                            const ple = i < pla.barrilsQueTocquen
-                            return (
-                              <div
-                                aria-label={ple ? `Ranura barril ${i + 1} ocupada` : `Ranura barril ${i + 1} buida`}
-                                className={`flex aspect-square items-center justify-center rounded-md border border-black/15 ${
-                                  ple ? '' : 'bg-[#D4C4A8]/60'
-                                }`}
-                                key={`br-${pisDesDeBase}-${i}`}
-                                style={{
-                                  background: ple ? colorBarril : undefined,
-                                  opacity: ple ? 0.9 : 0.55,
-                                }}
-                              >
-                                {ple ? (
-                                  <span className="aspect-square w-[55%] rounded-full border border-white/35 bg-black/10" />
-                                ) : null}
-                              </div>
-                            )
-                          })}
-                        </div>
-                        <p className="text-center text-[0.58rem] font-semibold uppercase tracking-wide text-slate-600">
-                          Caixes / llaunes (3×4, sense coincidir 1:1 amb barrils)
-                        </p>
-                        <div
-                          className="grid aspect-[3/4] w-full gap-0.5 rounded border border-[#7A4820]/40 bg-[#E8DCC4] p-1 shadow-inner"
-                          style={{
-                            gridTemplateColumns: `repeat(${PALLET3D_AMPLADA}, minmax(0, 1fr))`,
-                            gridTemplateRows: `repeat(${PALLET3D_FONDARIA}, minmax(0, 1fr))`,
-                          }}
-                        >
-                          {Array.from({ length: CELLES_PER_PIS }, (_, k) => {
-                            const ple = k < nCaixesVisual
-                            return (
-                              <div
-                                aria-hidden
-                                className="min-h-0 min-w-0 rounded-[2px] border border-black/10"
-                                key={`cx-${palet.index}-p${pisDesDeBase}-${k}`}
-                                style={{
-                                  background: ple ? colorCaixa : '#D4C4A8',
-                                  opacity: ple ? 0.88 : 0.45,
-                                }}
-                              />
-                            )
-                          })}
-                        </div>
-                        <p className="text-center text-[0.58rem] text-slate-600">
-                          Caixes assignades al pis (aprox.): {pla.ocupacioCaixes.toFixed(1)} caixes eq.
-                        </p>
-                      </div>
+                      <GraellaPisBarrilsICaixes
+                        colorBarril={CAT_COLOR.barril}
+                        colorCaixa={CAT_COLOR.caja}
+                        paletIndex={palet.index}
+                        pisDesDeBase={pisDesDeBase}
+                        planPisos={palet.planPisos!}
+                      />
                     </div>
                   )
                 })()}
