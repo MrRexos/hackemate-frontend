@@ -1,3 +1,5 @@
+import { mapControlFabCn } from '@/components/ui/Button'
+import { cn } from '@/utils/cn'
 import { Link, useMatch } from 'react-router-dom'
 
 function IconChevronLeft({ className }: { className?: string }) {
@@ -31,7 +33,7 @@ export function SiteHeader() {
             <div className="flex min-w-0 items-center gap-2 sm:gap-3">
               <Link
                 aria-label="Tornar al cercador"
-                className="inline-flex h-9 w-9 shrink-0 items-center justify-center rounded-full border border-slate-300 text-slate-700 transition hover:bg-slate-100 sm:h-10 sm:w-10"
+                className={cn(mapControlFabCn, 'sm:h-10 sm:w-10')}
                 to="/"
               >
                 <IconChevronLeft className="h-5 w-5 -translate-x-px" />

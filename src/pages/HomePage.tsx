@@ -2,6 +2,7 @@ import { useState } from 'react'
 import type { FormEvent } from 'react'
 import { useNavigate } from 'react-router-dom'
 
+import { Button } from '@/components/ui/Button'
 import { useDocumentTitle } from '@/hooks/useDocumentTitle'
 
 export function HomePage() {
@@ -39,12 +40,9 @@ export function HomePage() {
             value={truckCode}
           />
 
-          <button
-            className="w-full rounded-md border border-slate-200 py-2.5 text-sm font-medium text-slate-800 transition hover:border-slate-400 hover:bg-slate-100/70 active:bg-slate-100"
-            type="submit"
-          >
+          <Button size="full" type="submit" variant="primary">
             Obrir fitxa
-          </button>
+          </Button>
         </form>
       </div>
     </div>

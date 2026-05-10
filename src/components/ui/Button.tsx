@@ -1,36 +1,28 @@
 import type { ButtonHTMLAttributes, PropsWithChildren } from 'react'
-import { cn } from '@/utils/cn'
 
-type ButtonVariant = 'primary' | 'secondary'
+import { buttonCn, type ButtonSize, type ButtonVariant } from '@/components/ui/buttonStyles'
 
 type ButtonProps = PropsWithChildren<
   ButtonHTMLAttributes<HTMLButtonElement> & {
     variant?: ButtonVariant
+    size?: ButtonSize
   }
 >
-
-const variants: Record<ButtonVariant, string> = {
-  primary: 'bg-brand-600 text-white shadow-sm hover:bg-brand-700',
-  secondary: 'border border-slate-200 bg-white text-ink hover:bg-slate-50',
-}
 
 export function Button({
   children,
   className,
-  variant = 'primary',
+  variant = 'outline',
+  size = 'default',
+  type = 'button',
   ...props
 }: ButtonProps) {
   return (
-    <button
-      className={cn(
-        'inline-flex min-h-11 items-center justify-center rounded-lg px-5 text-sm font-semibold transition focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-brand-600',
-        variants[variant],
-        className,
-      )}
-      type="button"
-      {...props}
-    >
+    <button className={buttonCn(variant, size, className)} type={type} {...props}>
       {children}
     </button>
   )
 }
+
+export { buttonCn, mapControlFabCn, segmentTabCn, segmentTrackCn } from '@/components/ui/buttonStyles'
+export type { ButtonVariant, ButtonSize } from '@/components/ui/buttonStyles'

@@ -2,6 +2,7 @@
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react'
 
 import truckImg from '@/assets/img/truck_top.png'
+import { buttonCn } from '@/components/ui/Button'
 import {
   CAIXES_PER_PALLET,
   densitatKgPerCaixaEq,
@@ -271,7 +272,7 @@ function ModalDetall({
             ) : null}
           </h3>
           <button
-            className="shrink-0 rounded-lg border border-slate-200 px-3 py-1.5 text-sm font-medium text-slate-700 hover:bg-slate-50"
+            className={buttonCn('outline', 'default', 'shrink-0 px-3 py-1.5')}
             onClick={onTancar}
             type="button"
           >

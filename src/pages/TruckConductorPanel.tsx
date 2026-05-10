@@ -3,6 +3,8 @@ import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } fr
 import { ConductorRouteMap } from '@/components/truck/ConductorRouteMap'
 import { DistribuidoraCamioPla2D } from '@/components/truck/DistribuidoraCamioPla2D'
 import { RouteStopsTimeline } from '@/components/truck/RouteStopsTimeline'
+import { buttonCn, mapControlFabCn } from '@/components/ui/Button'
+import { cn } from '@/utils/cn'
 import type { RepartimentRetornCaixesBarrils } from '@/domain/palletPacking'
 import {
   descripcioUbicacioRetornablesParada,
@@ -470,7 +472,10 @@ export function TruckConductorPanel({ camio, routeTabVisible = true, onReiniciSi
           aria-expanded={simControlsOpen}
           aria-haspopup="dialog"
           aria-label={simControlsOpen ? 'Tancar controls de simulació' : 'Obrir controls de simulació (tecla C)'}
-          className="fixed bottom-4 right-4 z-[1850] flex h-9 w-9 items-center justify-center rounded-full border border-slate-300 bg-white text-slate-800 shadow-md transition hover:bg-slate-50 sm:bottom-5 sm:right-5"
+          className={cn(
+            mapControlFabCn,
+            'fixed bottom-4 right-4 z-[1850] sm:bottom-5 sm:right-5',
+          )}
           onClick={() => setSimControlsOpen((o) => !o)}
           type="button"
         >
@@ -583,7 +588,7 @@ export function TruckConductorPanel({ camio, routeTabVisible = true, onReiniciSi
                 Controls de simulació
               </h2>
               <button
-                className="shrink-0 rounded-lg px-2 py-1 text-sm font-medium text-slate-600 hover:bg-slate-100"
+                className={buttonCn('ghost', 'default', 'shrink-0 px-2 py-1.5')}
                 onClick={() => setSimControlsOpen(false)}
                 type="button"
               >
@@ -595,7 +600,7 @@ export function TruckConductorPanel({ camio, routeTabVisible = true, onReiniciSi
             <div className="mt-5 space-y-4">
               <div className="flex flex-wrap gap-2">
                 <button
-                  className="h-10 flex-1 rounded-xl bg-slate-900 px-4 text-sm font-semibold text-white transition hover:bg-slate-800 disabled:cursor-not-allowed disabled:opacity-50"
+                  className={buttonCn('primary', 'default', 'min-h-10 flex-1')}
                   disabled={!camio.ruta || !driveMeta}
                   onClick={() => setSimPlaying((p) => !p)}
                   type="button"
@@ -603,7 +608,7 @@ export function TruckConductorPanel({ camio, routeTabVisible = true, onReiniciSi
                   {simPlaying ? 'Pausar simulació' : 'Iniciar simulació'}
                 </button>
                 <button
-                  className="h-10 shrink-0 rounded-xl border border-slate-300 bg-white px-4 text-sm font-semibold text-slate-800 transition hover:bg-slate-50"
+                  className={buttonCn('outline', 'default', 'min-h-10 shrink-0')}
                   onClick={() => {
                     handleReset()
                     setSimControlsOpen(false)
@@ -652,14 +657,11 @@ export function TruckConductorPanel({ camio, routeTabVisible = true, onReiniciSi
                 Has arribat al punt d’entrega:
                 <span className="mt-1 block font-semibold text-slate-900">{deliveryFlow.payload.nom}</span>
               </p>
-              <p className="mt-2 text-xs text-amber-900/90">
-                La simulació de la ruta està en pausa fins que finalitzis la comanda.
-              </p>
 
               <div className="mt-5 grid min-w-0 grid-cols-1 gap-5 lg:grid-cols-[minmax(0,1.55fr)_minmax(0,0.72fr)] lg:items-stretch lg:gap-5 xl:grid-cols-[minmax(0,1.62fr)_minmax(0,0.68fr)] xl:gap-6">
                 <div className="flex min-h-0 min-w-0 flex-col lg:min-w-0">
                   <p className="mb-2 text-xs font-semibold uppercase tracking-wide text-slate-600">
-                    Disseny del camió (mercat en verd = aquesta parada)
+                    Entrega els següents productes:
                   </p>
                   <div className="relative min-h-[220px] w-full overflow-hidden rounded-xl border border-slate-200 bg-[#ebe4d9] lg:min-h-[280px]">
                     {camio.plaCarrega ? (
@@ -683,7 +685,7 @@ export function TruckConductorPanel({ camio, routeTabVisible = true, onReiniciSi
                   </div>
                 </div>
 
-                <div className="flex min-h-0 min-w-0 max-w-full flex-col lg:max-w-[min(100%,20rem)] xl:max-w-[min(100%,19rem)]">
+                <div className="mt-6 flex min-h-0 min-w-0 max-w-full flex-col lg:mt-6 lg:max-w-[min(100%,20rem)] xl:max-w-[min(100%,19rem)]">
                   {liniesModalEntrega.length > 0 ? (
                     <div className="rounded-xl border border-slate-200 bg-slate-50 px-2.5 py-2.5">
                       <p className="text-[11px] font-semibold uppercase tracking-wide text-slate-700">
@@ -702,22 +704,27 @@ export function TruckConductorPanel({ camio, routeTabVisible = true, onReiniciSi
                       Sense detall de productes per aquesta parada (comprova la connexió o les taules de la BD).
                     </p>
                   )}
-                  <p className="mt-2 text-[11px] leading-snug text-slate-500">
-                    El camió romandrà aturat fins que confirmis la baixada de mercaderia.
-                  </p>
                 </div>
               </div>
 
               <div className="mt-6 grid w-full min-w-0 grid-cols-1 gap-3 sm:grid-cols-[minmax(0,9.75rem)_minmax(0,1fr)] sm:items-stretch">
                 <button
-                  className="col-start-1 row-start-2 flex h-11 w-full min-w-0 items-center justify-center rounded-xl border border-slate-300 bg-white px-2.5 text-sm font-semibold leading-tight text-slate-800 transition hover:bg-slate-50 sm:row-start-1 sm:h-[3rem] sm:max-w-[9.75rem] sm:justify-center sm:px-2.5"
+                  className={buttonCn(
+                    'outline',
+                    'comfortable',
+                    'col-start-1 row-start-2 flex w-full min-w-0 justify-center px-2.5 sm:row-start-1 sm:max-w-[9.75rem]',
+                  )}
                   onClick={cancelDeliveryAtArrival}
                   type="button"
                 >
                   Cancel·lar entrega
                 </button>
                 <button
-                  className="col-start-1 row-start-1 flex min-h-[3.25rem] w-full min-w-0 items-center justify-center rounded-xl bg-slate-900 px-4 text-base font-semibold leading-tight text-white transition hover:bg-slate-800 sm:col-start-2 sm:min-h-[3rem] sm:px-6"
+                  className={buttonCn(
+                    'primary',
+                    'comfortable',
+                    'col-start-1 row-start-1 flex w-full min-w-0 justify-center text-base font-semibold leading-tight sm:col-start-2 sm:px-6',
+                  )}
                   onClick={() =>
                     setDeliveryFlow({
                       step: 'retornQuestion',
@@ -727,26 +734,21 @@ export function TruckConductorPanel({ camio, routeTabVisible = true, onReiniciSi
                   }
                   type="button"
                 >
-                  He finalitzat la comanda
+                  Finalitzar comanda
                 </button>
               </div>
-              <p className="mt-3 max-w-full break-words text-center text-xs leading-relaxed text-slate-500">
-                «Cancel·lar entrega» si no s’ha pogut baixar la mercaderia: la ruta continua i el que hi havia per
-                aquest punt roman al camió.
-              </p>
             </div>
           ) : null}
 
           {deliveryFlow.step === 'retornQuestion' ? (
             <div className="w-full max-w-md rounded-2xl border border-slate-200 bg-white p-6 shadow-2xl">
-              <h3 className="text-lg font-semibold text-slate-900">Retorn de buits</h3>
+              <h3 className="text-lg font-semibold text-slate-900">Retorn d'envasos</h3>
               <p className="mt-2 text-sm text-slate-600">
-                Has recollit envàs retornable (buits) per portar al magatzem en aquesta entrega?
+                T'han retornat algun envàs en aquesta entrega?
               </p>
-              <p className="mt-2 text-xs text-amber-900/90">La ruta romandrà en pausa fins que responguis.</p>
               <div className="mt-6 flex flex-col gap-2 sm:flex-row sm:gap-3">
                 <button
-                  className="h-11 flex-1 rounded-xl border border-slate-300 bg-white text-sm font-semibold text-slate-800 transition hover:bg-slate-50"
+                  className={buttonCn('outline', 'comfortable', 'flex-1')}
                   onClick={() => {
                     camio.finalitzarEntregaSenseRetorn(deliveryFlow.index)
                     completeDeliveryForIndex(deliveryFlow.index)
@@ -756,7 +758,7 @@ export function TruckConductorPanel({ camio, routeTabVisible = true, onReiniciSi
                   No, cap retorn
                 </button>
                 <button
-                  className="h-11 flex-1 rounded-xl bg-emerald-700 text-sm font-semibold text-white transition hover:bg-emerald-800"
+                  className={buttonCn('primary', 'comfortable', 'flex-1')}
                   onClick={() => {
                     if (!camio.plaCarrega) return
                     const vol = volumMercaderiaNoRetornableParadaAlPla(camio.plaCarrega, deliveryFlow.index)
@@ -779,19 +781,13 @@ export function TruckConductorPanel({ camio, routeTabVisible = true, onReiniciSi
 
           {deliveryFlow.step === 'retornUbicacio' ? (
             <div className="max-h-[min(92vh,900px)] w-full max-w-4xl overflow-y-auto rounded-2xl border border-slate-200 bg-white p-5 shadow-2xl sm:p-6">
-              <h3 className="text-lg font-semibold text-slate-900">On guardar el retorn</h3>
+              <h3 className="text-lg font-semibold text-slate-900">Envasos retornables</h3>
               <p className="mt-1 text-sm text-slate-600">
                 Parada: <span className="font-semibold text-slate-900">{deliveryFlow.nom}</span>
               </p>
-              <p className="mt-3 rounded-xl border border-slate-200 bg-slate-50 px-3 py-3 text-sm text-slate-800">
-                <span className="font-medium text-slate-900">Quantitat aproximada (60% del volum baixat del camió):</span>{' '}
-                {resumRepartimentRetornText(deliveryFlow.repartiment)}
-              </p>
-              <p className="mt-3 rounded-xl border border-emerald-200/80 bg-emerald-50/90 px-3 py-3 text-sm leading-relaxed text-emerald-950">
-                {descripcioUbicacioRetornablesParada(camio.plaCarrega, deliveryFlow.index, camio.tipus)}
-              </p>
+              
               <p className="mb-2 mt-5 text-xs font-semibold uppercase tracking-wide text-slate-600">
-                Pla del camió (verd = retornables d’aquesta parada)
+                Emmagatzema els retornables a les zones indicades:
               </p>
               <div className="relative min-h-[200px] w-full overflow-hidden rounded-xl border border-slate-200 bg-[#ebe4d9] lg:min-h-[260px]">
                 {camio.plaCarrega ? (
@@ -813,11 +809,11 @@ export function TruckConductorPanel({ camio, routeTabVisible = true, onReiniciSi
                 )}
               </div>
               <button
-                className="mt-6 h-11 w-full rounded-xl bg-slate-900 text-sm font-semibold text-white transition hover:bg-slate-800"
+                className={buttonCn('primary', 'comfortable', 'mt-6 w-full')}
                 onClick={() => completeDeliveryForIndex(deliveryFlow.index)}
                 type="button"
               >
-                Ja està col·locat · Continuar la ruta
+                Continuar la ruta
               </button>
             </div>
           ) : null}
@@ -837,7 +833,7 @@ export function TruckConductorPanel({ camio, routeTabVisible = true, onReiniciSi
             </p>
             <p className="mt-2 text-xs text-slate-500">Fi de la simulació.</p>
             <button
-              className="mt-6 h-11 w-full rounded-xl bg-emerald-700 text-sm font-semibold text-white transition hover:bg-emerald-800"
+              className={buttonCn('primary', 'comfortable', 'mt-6 w-full')}
               onClick={dismissJourneyComplete}
               type="button"
             >

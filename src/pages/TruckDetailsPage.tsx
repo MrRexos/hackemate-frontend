@@ -2,6 +2,7 @@ import { Link, useParams } from 'react-router-dom'
 import { useState } from 'react'
 
 import { DistribuidoraPalletPlan } from '@/components/truck/DistribuidoraPalletPlan'
+import { buttonCn, segmentTabCn, segmentTrackCn } from '@/components/ui/Button'
 import { getCamioPerCodi } from '@/data/camions'
 import { useDocumentTitle } from '@/hooks/useDocumentTitle'
 import { TruckConductorPanel } from '@/pages/TruckConductorPanel'
@@ -25,33 +26,22 @@ export function TruckDetailsPage() {
           <p className="text-slate-600">
             No existeix cap camió amb el codi <span className="font-semibold">{normalizedCode}</span>.
           </p>
-          <Link
-            className="inline-flex h-11 items-center rounded-xl bg-slate-900 px-5 text-sm font-semibold text-white transition hover:bg-slate-800"
-            to="/"
-          >
+          <Link className={buttonCn('primary', 'comfortable', 'inline-flex')} to="/">
             Tornar al cercador
           </Link>
         </div>
       ) : (
         <div className="flex w-full min-h-0 flex-1 flex-col">
-          <div className="mb-4 flex shrink-0 gap-2 rounded-xl bg-slate-100 p-1 sm:mb-5">
+          <div className={segmentTrackCn}>
             <button
-              className={`h-10 flex-1 rounded-lg text-sm font-semibold transition ${
-                activeTab === 'distribuidora'
-                  ? 'bg-white text-slate-900 shadow'
-                  : 'text-slate-600 hover:bg-slate-200'
-              }`}
+              className={segmentTabCn(activeTab === 'distribuidora')}
               onClick={() => setActiveTab('distribuidora')}
               type="button"
             >
               Distribuidora
             </button>
             <button
-              className={`h-10 flex-1 rounded-lg text-sm font-semibold transition ${
-                activeTab === 'conductor'
-                  ? 'bg-white text-slate-900 shadow'
-                  : 'text-slate-600 hover:bg-slate-200'
-              }`}
+              className={segmentTabCn(activeTab === 'conductor')}
               onClick={() => setActiveTab('conductor')}
               type="button"
             >
