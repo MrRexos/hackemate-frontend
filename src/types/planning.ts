@@ -31,11 +31,17 @@ export type PlanningClient = {
   loadDifficulty: number
 }
 
+export type PlanningMaterialBreakdownItem = {
+  material: string
+  quantity: number
+}
+
 export type PlanningLoadRow = {
   lineId: string
   clientId: string
   clientName: string
   material: string
+  materialBreakdown?: readonly PlanningMaterialBreakdownItem[]
   product: string
   quantity: number
   unit: string

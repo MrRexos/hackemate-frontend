@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import * as L from 'leaflet'
 import {
   ArrowUpRight,
@@ -25,7 +25,13 @@ import { planningDataset } from '@/data/planningData'
 import { useDocumentTitle } from '@/hooks/useDocumentTitle'
 import { siteConfig } from '@/lib/site'
 import type { AppView } from '@/types/navigation'
-import type { PlanningDay, PlanningDaySummary, PlanningLoadRow, TruckType } from '@/types/planning'
+import type {
+  PlanningDay,
+  PlanningDaySummary,
+  PlanningLoadRow,
+  PlanningMaterialBreakdownItem,
+  TruckType,
+} from '@/types/planning'
 import { getRoadRoutePolyline } from '@/utils/roadRouting'
 import {
   buildDistributionPlan,
@@ -37,6 +43,8 @@ import {
   type TruckAvailability,
 } from '@/utils/routeOptimizer'
 import { cn } from '@/utils/cn'
+import type { LoadPiece, TruckLoadPlan } from '@/utils/loadPlanner'
+import { formatDisplayProductTitle, splitDisplayProductNames } from '@/utils/productDisplay'
 import truck6Icon from '../../assets/truck6.svg'
 import truck8Icon from '../../assets/truck8.svg'
 import vanIcon from '../../assets/van.svg'
@@ -78,6 +86,14 @@ type RouteSimulationServicePhase = RouteSimulationPhaseBase & {
 }
 
 type RouteSimulationPhase = RouteSimulationDrivePhase | RouteSimulationServicePhase
+
+type RouteProductItem = {
+  material: string
+  materialBreakdown: PlanningMaterialBreakdownItem[]
+  product: string
+  quantity: number
+  unit: string
+}
 
 type RouteSimulationTimeline = {
   finishMinute: number
@@ -156,13 +172,25 @@ const HOME_INITIAL_AVAILABILITY_BY_CAPACITY: Record<number, number> = {
   6: 10,
   8: 6,
 }
+const HOME_IDEAL_TARGET_CAPACITY_USE = 0.84
+const HOME_IDEAL_MAX_CAPACITY_USE = 0.88
+const HOME_IDEAL_MIN_CAPACITY_USE = 0.74
+const HOME_IDEAL_CLIENTS_PER_TRANSPORT = 13
+const HOME_IDEAL_PALLETS_PER_TRANSPORT = 6.2
+const HOME_IDEAL_EXTRA_TRANSPORT_BUFFER = 8
+const HOME_IDEAL_ROUTE_SHARE_BY_CAPACITY: Record<number, number> = {
+  3: 0.125,
+  6: 0.625,
+  8: 0.25,
+}
 
 export function HomePage({ activeView, onNavigate }: HomePageProps) {
   const defaultDate =
     planningDataset.days['2026-02-05']?.date ?? planningDataset.dates[0]?.date ?? ''
+  const defaultDay = planningDataset.days[defaultDate]
   const [selectedDate, setSelectedDate] = useState(defaultDate)
   const [availability, setAvailability] = useState<TruckAvailability>(() =>
-    getHomeInitialAvailability(planningDataset.truckTypes),
+    getHomeIdealAvailability(defaultDay, planningDataset.truckTypes),
   )
   const [selectedTruckId, setSelectedTruckId] = useState('')
   const selectedDay = planningDataset.days[selectedDate]
@@ -189,6 +217,12 @@ export function HomePage({ activeView, onNavigate }: HomePageProps) {
     }))
   }
 
+  function handleDateChange(date: string) {
+    setSelectedDate(date)
+    setSelectedTruckId('')
+    setAvailability(getHomeIdealAvailability(planningDataset.days[date], planningDataset.truckTypes))
+  }
+
   if (activeView === 'pedidos') {
     return (
       <OrdersView
@@ -197,7 +231,7 @@ export function HomePage({ activeView, onNavigate }: HomePageProps) {
         hasTrucks={hasTrucks}
         onAvailabilityChange={handleAvailabilityChange}
         onCalculate={() => onNavigate('organizacion')}
-        onDateChange={setSelectedDate}
+        onDateChange={handleDateChange}
         plan={plan}
         selectedDate={selectedDate}
         selectedDay={selectedDay}
@@ -264,7 +298,8 @@ function OrdersView({
   const selectorDate = selectedDate === '2026-02-05' ? HOME_DISPLAY_DATE : selectedDate
   const transportOptions = getTransportOptions(truckTypes, availability)
   const summary = selectedDay?.summary
-  const usedTransports = selectedDate === '2026-02-05' ? 14 : plan?.summary.usedTrucks ?? 0
+  const availableTransports = countAvailableTransports(availability, truckTypes)
+  const usedTransports = plan?.summary.usedTrucks ?? 0
   const dayCapacity = summary ? Math.round(summary.pallets) : 0
   const warning = getHomeWarning(plan, selectedDay, hasTrucks)
   const homeMetrics = [
@@ -281,7 +316,7 @@ function OrdersView({
     {
       icon: Road,
       label: 'TRANSPORTES',
-      value: usedTransports > 0 ? `${usedTransports}/${usedTransports}` : hasTrucks ? '0/0' : '0/0',
+      value: availableTransports > 0 ? `${usedTransports}/${availableTransports}` : '0/0',
     },
     {
       icon: Grid3X3,
@@ -560,10 +595,7 @@ function OrganizationView({
       <section className="space-y-4">
         <div className="flex flex-wrap items-center justify-between gap-4">
           <div>
-            <h2 className="text-base font-bold text-[#47392b]">Mapa global de rutas</h2>
-            <p className="mt-1 text-sm font-medium text-[#806a54]">
-              Selecciona una ruta para aislar su trazo y ver sus paradas numeradas.
-            </p>
+            <h2 className="route-distribution-map-title">Mapa global de rutas</h2>
           </div>
         </div>
         <OrganizationRoutesMap
@@ -788,16 +820,21 @@ function RouteDetailView({
   ])
 
   const topProducts = useMemo(() => {
-    const totals = new Map<string, { material: string; product: string; quantity: number; unit: string }>()
+    const totals = new Map<string, RouteProductItem>()
     for (const row of selectedTruck?.masterRows ?? []) {
       const key = `${row.material}-${row.product}`
       const current = totals.get(key) ?? {
         material: row.material,
+        materialBreakdown: [],
         product: row.product,
         quantity: 0,
         unit: row.unit,
       }
       current.quantity += row.quantity
+      current.materialBreakdown = mergeMaterialBreakdown(
+        current.materialBreakdown,
+        materialBreakdownForRow(row),
+      )
       totals.set(key, current)
     }
     return [...totals.values()].sort((a, b) => b.quantity - a.quantity).slice(0, 6)
@@ -930,6 +967,7 @@ function RouteDetailView({
         <h2 className="route-section-title">Repartos:</h2>
         <RouteOrdersList
             clients={clients}
+            loadPlan={selectedTruck.loadPlan}
             onSelectClient={handleSelectClient}
           rowsByClient={rowsByClient}
             selectedClientId={activeSelectedClientId}
@@ -984,11 +1022,13 @@ function RouteDetailView({
 
 function RouteOrdersList({
   clients,
+  loadPlan,
   onSelectClient,
   rowsByClient,
   selectedClientId,
 }: {
   clients: readonly RouteClient[]
+  loadPlan: TruckLoadPlan
   onSelectClient: (clientId: string) => void
   rowsByClient: ReadonlyMap<string, readonly PlanningLoadRow[]>
   selectedClientId: string
@@ -1038,7 +1078,11 @@ function RouteOrdersList({
               )}
             </button>
             {expanded ? (
-              <RouteOrderExpanded client={client} rows={rowsByClient.get(client.clientId) ?? []} />
+              <RouteOrderExpanded
+                client={client}
+                loadPlan={loadPlan}
+                rows={rowsByClient.get(client.clientId) ?? []}
+              />
             ) : null}
           </article>
         )
@@ -1049,9 +1093,11 @@ function RouteOrdersList({
 
 function RouteOrderExpanded({
   client,
+  loadPlan,
   rows,
 }: {
   client: RouteClient
+  loadPlan: TruckLoadPlan
   rows: readonly PlanningLoadRow[]
 }) {
   const visibleRows = rows.slice(0, 8)
@@ -1073,8 +1119,11 @@ function RouteOrderExpanded({
           <ul key={index}>
             {column.map((row) => (
               <li className={cn(row.returnable && 'route-order-product-returnable')} key={row.lineId}>
-                <strong>{decimalFormatter.format(row.quantity)} uds de [{trimProductName(row.product)}]</strong>
-                <span>PALET X</span>
+                <strong title={formatDisplayProductTitle(row.product)}>
+                  {decimalFormatter.format(row.quantity)} {row.unit || 'uds'} de{' '}
+                  <ProductNameLines product={row.product} />
+                </strong>
+                <span>{formatRowPalletLocation(row, loadPlan)}</span>
               </li>
             ))}
           </ul>
@@ -1169,26 +1218,165 @@ function ScoreLine({ label, value, strong = false }: { label: string; value: str
 function RouteProductsCard({
   products,
 }: {
-  products: readonly { material: string; product: string; quantity: number; unit: string }[]
+  products: readonly RouteProductItem[]
 }) {
   return (
     <div className="route-products-card">
       <h3>Lista de todos los productos</h3>
       <ul>
-        {products.map((product) => (
-          <li key={`${product.material}-${product.product}`}>
-            <span>
-              <strong>{trimProductName(product.product)}</strong>
-              <small>{product.material}</small>
-            </span>
-            <em>
-              {decimalFormatter.format(product.quantity)} {product.unit}
-            </em>
-          </li>
-        ))}
+        {products.map((product) => {
+          const materials = formatProductMaterials(product)
+          return (
+            <li key={`${product.material}-${product.product}`}>
+              <span>
+                <strong title={formatDisplayProductTitle(product.product)}>
+                  <ProductNameLines product={product.product} />
+                </strong>
+                <small title={materials}>{materials}</small>
+              </span>
+              <em>
+                {decimalFormatter.format(product.quantity)} {product.unit}
+              </em>
+            </li>
+          )
+        })}
       </ul>
     </div>
   )
+}
+
+function ProductNameLines({ product }: { product: string | readonly string[] }) {
+  const products = splitDisplayProductNames(product)
+
+  return (
+    <>
+      {products.map((productName, index) => (
+        <Fragment key={`${productName}-${index}`}>
+          {index > 0 ? <br /> : null}
+          {productName}
+        </Fragment>
+      ))}
+    </>
+  )
+}
+
+function formatRowPalletLocation(row: PlanningLoadRow, loadPlan: TruckLoadPlan) {
+  const palletNumbers = getRowPalletNumbers(row, loadPlan)
+
+  if (palletNumbers.length === 0) {
+    return row.returnable ? 'Reserva retornables' : 'Sin palet'
+  }
+
+  return palletNumbers.length === 1
+    ? `Palet ${palletNumbers[0]}`
+    : `Palets ${palletNumbers.join(', ')}`
+}
+
+function getRowPalletNumbers(row: PlanningLoadRow, loadPlan: TruckLoadPlan) {
+  if (row.returnable) {
+    return uniqueSortedNumbers(
+      loadPlan.pallets
+        .filter((pallet) => pallet.reservedForReturnables)
+        .map((pallet) => pallet.slotNumber),
+    )
+  }
+
+  const exactMatches = uniqueSortedNumbers(
+    loadPlan.pallets
+      .filter((pallet) => pallet.pieces.some((piece) => pieceMatchesRow(piece, row, true)))
+      .map((pallet) => pallet.slotNumber),
+  )
+
+  if (exactMatches.length > 0) {
+    return exactMatches
+  }
+
+  return uniqueSortedNumbers(
+    loadPlan.pallets
+      .filter((pallet) => pallet.pieces.some((piece) => pieceMatchesRow(piece, row, false)))
+      .map((pallet) => pallet.slotNumber),
+  )
+}
+
+function pieceMatchesRow(piece: LoadPiece, row: PlanningLoadRow, exact: boolean) {
+  if (piece.clientId !== row.clientId || piece.productType !== row.productType) {
+    return false
+  }
+
+  if (!exact) {
+    return true
+  }
+
+  const rowProducts = splitDisplayProductNames(row.product)
+  const pieceProducts = splitDisplayProductNames(piece.products)
+  const productMatches = rowProducts.some((product) => pieceProducts.includes(product))
+
+  if (productMatches) {
+    return true
+  }
+
+  const pieceMaterials = new Set([
+    ...piece.materialCodes,
+    ...piece.materialBreakdown.map((item) => item.material),
+  ])
+  return rowMaterialCodes(row).some((material) => pieceMaterials.has(material))
+}
+
+function rowMaterialCodes(row: PlanningLoadRow) {
+  return materialBreakdownForRow(row)
+    .flatMap((item) => item.material.split(','))
+    .map((material) => material.trim())
+    .filter(Boolean)
+}
+
+function uniqueSortedNumbers(values: readonly number[]) {
+  return [...new Set(values)].sort((a, b) => a - b)
+}
+
+function materialBreakdownForRow(row: PlanningLoadRow): PlanningMaterialBreakdownItem[] {
+  const breakdown = row.materialBreakdown?.filter((item) => item.material) ?? []
+  if (breakdown.length > 0) {
+    return breakdown.map((item) => ({
+      material: item.material,
+      quantity: item.quantity,
+    }))
+  }
+
+  return row.material
+    ? [{
+        material: row.material,
+        quantity: row.quantity,
+      }]
+    : []
+}
+
+function mergeMaterialBreakdown(
+  current: readonly PlanningMaterialBreakdownItem[],
+  additions: readonly PlanningMaterialBreakdownItem[],
+): PlanningMaterialBreakdownItem[] {
+  const totals = new Map<string, number>()
+  for (const item of [...current, ...additions]) {
+    totals.set(item.material, (totals.get(item.material) ?? 0) + item.quantity)
+  }
+  return [...totals.entries()].map(([material, quantity]) => ({ material, quantity }))
+}
+
+function formatProductMaterials(product: RouteProductItem) {
+  const materialCodes = product.material
+    ? product.material.split(',').map((material) => material.trim()).filter(Boolean)
+    : product.materialBreakdown.map((item) => item.material)
+
+  if (materialCodes.length === 0) {
+    return 'Sin código'
+  }
+
+  const quantitiesByMaterial = new Map(product.materialBreakdown.map((item) => [item.material, item.quantity]))
+  return materialCodes
+    .map((material) => {
+      const quantity = quantitiesByMaterial.get(material)
+      return typeof quantity === 'number' ? `${material} x${decimalFormatter.format(quantity)}` : material
+    })
+    .join(', ')
 }
 
 function OrganizationRoutesMap({
@@ -1920,8 +2108,126 @@ function getEffectiveSelectedTruckId(plan: DistributionPlan | null, selectedTruc
     : plan.assignedTrucks[ROUTE_DEFAULT_TRUCK_INDEX]?.id ?? plan.assignedTrucks[0]?.id ?? plan.trucks[0]?.id ?? ''
 }
 
-function getHomeInitialAvailability(truckTypes: readonly TruckType[]): TruckAvailability {
+type HomeFleetCandidate = {
+  availability: TruckAvailability
+  capacityDistance: number
+  fixedCost: number
+  score: number
+  transportCount: number
+}
+
+function countAvailableTransports(
+  availability: TruckAvailability,
+  truckTypes: readonly TruckType[],
+) {
+  return truckTypes.reduce((total, type) => {
+    return total + Math.max(0, Math.floor(availability[type.id] ?? 0))
+  }, 0)
+}
+
+function getHomeIdealAvailability(
+  day: PlanningDay | undefined,
+  truckTypes: readonly TruckType[],
+): TruckAvailability {
   const defaultAvailability = getDefaultAvailability(truckTypes)
+
+  if (!day) {
+    return Object.fromEntries(
+      truckTypes.map((type) => [
+        type.id,
+        HOME_INITIAL_AVAILABILITY_BY_CAPACITY[type.palletCapacity] ?? defaultAvailability[type.id] ?? 0,
+      ]),
+    ) as TruckAvailability
+  }
+
+  const planningDay = day
+  const minimumCapacity = Math.ceil(planningDay.summary.pallets)
+  const targetCapacity = Math.ceil(planningDay.summary.pallets / HOME_IDEAL_TARGET_CAPACITY_USE)
+  const targetTransportCount = Math.max(
+    1,
+    Math.ceil(planningDay.summary.clients / HOME_IDEAL_CLIENTS_PER_TRANSPORT),
+    Math.ceil(planningDay.summary.pallets / HOME_IDEAL_PALLETS_PER_TRANSPORT),
+  )
+  const preferredCounts = getHomePreferredTransportCounts(truckTypes, targetTransportCount)
+  const maxTransportCount = Math.max(
+    truckTypes.length,
+    targetTransportCount + HOME_IDEAL_EXTRA_TRANSPORT_BUFFER,
+  )
+  const maxCounts = truckTypes.map((type) => {
+    const capacityLimit = Math.ceil(targetCapacity / Math.max(1, type.palletCapacity))
+    return Math.max(1, Math.min(maxTransportCount, capacityLimit + HOME_IDEAL_EXTRA_TRANSPORT_BUFFER))
+  })
+  const best: { current: HomeFleetCandidate | null } = { current: null }
+
+  function visit(
+    index: number,
+    counts: number[],
+    totalCapacity: number,
+    transportCount: number,
+    fixedCost: number,
+  ) {
+    if (transportCount > maxTransportCount) {
+      return
+    }
+
+    if (index === truckTypes.length) {
+      if (transportCount === 0 || totalCapacity < minimumCapacity) {
+        return
+      }
+
+      const availability = Object.fromEntries(
+        truckTypes.map((type, typeIndex) => [type.id, counts[typeIndex] ?? 0]),
+      ) as TruckAvailability
+      const capacityUse = planningDay.summary.pallets / Math.max(1, totalCapacity)
+      const underTargetCapacity = Math.max(0, targetCapacity - totalCapacity)
+      const overTargetCapacity = Math.max(0, totalCapacity - targetCapacity)
+      const transportCountGap = Math.abs(transportCount - targetTransportCount)
+      const capacityDistance = Math.abs(totalCapacity - targetCapacity)
+      const mixPenalty = truckTypes.reduce((total, type, typeIndex) => {
+        return total + Math.abs((counts[typeIndex] ?? 0) - (preferredCounts[type.id] ?? 0)) * 18
+      }, 0)
+      const score =
+        underTargetCapacity * 80 +
+        overTargetCapacity * 4 +
+        Math.max(0, capacityUse - HOME_IDEAL_MAX_CAPACITY_USE) * 900 +
+        Math.max(0, HOME_IDEAL_MIN_CAPACITY_USE - capacityUse) * 220 +
+        transportCountGap * 28 +
+        fixedCost * 0.1 +
+        mixPenalty
+      const candidate = {
+        availability,
+        capacityDistance,
+        fixedCost,
+        score,
+        transportCount,
+      }
+
+      if (isBetterHomeFleetCandidate(candidate, best.current, targetTransportCount)) {
+        best.current = candidate
+      }
+      return
+    }
+
+    const truckType = truckTypes[index]
+    const maxCount = maxCounts[index] ?? 0
+
+    for (let count = 0; count <= maxCount; count += 1) {
+      counts[index] = count
+      visit(
+        index + 1,
+        counts,
+        totalCapacity + count * truckType.palletCapacity,
+        transportCount + count,
+        fixedCost + count * truckType.fixedCostMinutes,
+      )
+    }
+  }
+
+  visit(0, [], 0, 0, 0)
+
+  if (best.current) {
+    return best.current.availability
+  }
 
   return Object.fromEntries(
     truckTypes.map((type) => [
@@ -1929,6 +2235,62 @@ function getHomeInitialAvailability(truckTypes: readonly TruckType[]): TruckAvai
       HOME_INITIAL_AVAILABILITY_BY_CAPACITY[type.palletCapacity] ?? defaultAvailability[type.id] ?? 0,
     ]),
   ) as TruckAvailability
+}
+
+function getHomePreferredTransportCounts(
+  truckTypes: readonly TruckType[],
+  targetTransportCount: number,
+): TruckAvailability {
+  if (targetTransportCount <= 2) {
+    const smallestType = truckTypes.reduce<TruckType | null>((smallest, type) => {
+      return !smallest || type.palletCapacity < smallest.palletCapacity ? type : smallest
+    }, null)
+
+    return Object.fromEntries(
+      truckTypes.map((type) => [type.id, type.id === smallestType?.id ? targetTransportCount : 0]),
+    ) as TruckAvailability
+  }
+
+  const weightedTypes = truckTypes.map((type) => ({
+    type,
+    weight: HOME_IDEAL_ROUTE_SHARE_BY_CAPACITY[type.palletCapacity] ?? 1,
+  }))
+  const totalWeight = weightedTypes.reduce((total, item) => total + item.weight, 0) || 1
+  let assignedCount = 0
+  const entries = weightedTypes.map(({ type, weight }, index) => {
+    const isLast = index === weightedTypes.length - 1
+    const count = isLast
+      ? Math.max(0, targetTransportCount - assignedCount)
+      : Math.max(0, Math.round((targetTransportCount * weight) / totalWeight))
+    assignedCount += count
+    return [type.id, count] as const
+  })
+
+  return Object.fromEntries(entries) as TruckAvailability
+}
+
+function isBetterHomeFleetCandidate(
+  candidate: HomeFleetCandidate,
+  current: HomeFleetCandidate | null,
+  targetTransportCount: number,
+) {
+  if (!current) {
+    return true
+  }
+
+  const scoreDelta = candidate.score - current.score
+  if (Math.abs(scoreDelta) > 0.0001) {
+    return scoreDelta < 0
+  }
+
+  const candidateCountDistance = Math.abs(candidate.transportCount - targetTransportCount)
+  const currentCountDistance = Math.abs(current.transportCount - targetTransportCount)
+  return (
+    candidate.capacityDistance < current.capacityDistance ||
+    (candidate.capacityDistance === current.capacityDistance &&
+      (candidateCountDistance < currentCountDistance ||
+        (candidateCountDistance === currentCountDistance && candidate.fixedCost < current.fixedCost)))
+  )
 }
 
 function getHomeWarning(
@@ -1977,10 +2339,6 @@ function transportStatusLabel(truck: PlannedTruck) {
     detail: `${truck.summary.lines} productos`,
     label: 'Asignado',
   }
-}
-
-function trimProductName(product: string) {
-  return product.length > 46 ? `${product.slice(0, 43)}...` : product
 }
 
 function formatKg(value: number) {

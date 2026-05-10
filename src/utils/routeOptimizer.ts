@@ -6,11 +6,18 @@ export type TruckAvailability = Record<string, number>
 export type RouteStopMetrics = {
   clientId: string
   arrival: string
+  baseServiceMinutes: number
   serviceMinutes: number
   waitMinutes: number
   lateMinutes: number
+  windowPenalty: number
   priorityPenalty: number
   loadPenalty: number
+  accessPenalty: number
+  returnablePenalty: number
+  returnablePallets: number
+  projectedLoadPallets: number
+  collectedReturnablePallets: number
   windowStatus: string
 }
 
@@ -20,8 +27,14 @@ export type RouteMetrics = {
   serviceMinutes: number
   waitMinutes: number
   lateMinutes: number
+  windowPenalty: number
   priorityPenalty: number
   loadPenalty: number
+  accessPenalty: number
+  returnablePenalty: number
+  frictionPenalty: number
+  reservedReturnablePallets: number
+  peakLoadPallets: number
   fuelPenalty: number
   operationalScore: number
   totalMinutes: number
@@ -37,6 +50,11 @@ export type RouteClient = PlanningClient & {
   lateMinutes: number
   routePriorityPenalty: number
   routeLoadPenalty: number
+  routeAccessPenalty: number
+  routeReturnablePenalty: number
+  routeWindowPenalty: number
+  routeProjectedLoadPallets: number
+  routeCollectedReturnablePallets: number
   loadZone: number
 }
 
@@ -75,6 +93,17 @@ export type PlannedTruck = {
     capacityUse: number
     overflow: boolean
     activationCostMinutes: number
+    variableCostMinutes: number
+    occupancyPenalty: number
+    vehicleSuitabilityPenalty: number
+    cohesionPenalty: number
+    operationalFriction: number
+    reservedReturnablePallets: number
+    peakLoadPallets: number
+    targetCapacityUse: number
+    riskLevel: 'bajo' | 'medio' | 'alto'
+    risks: readonly string[]
+    explanation: readonly string[]
     totalScore: number
   }
 }
@@ -96,6 +125,9 @@ export type DistributionPlan = {
     usedTrucks: number
     totalCapacityPallets: number
     usedCapacityPallets: number
+    reservedReturnablePallets: number
+    operationalFriction: number
+    totalCostMinutes: number
     operationalScore: number
   }
 }
@@ -148,7 +180,16 @@ const PRIORITY_DELAY_FACTOR = 0.08
 const LOAD_ACCESS_FACTOR = 1.6
 const PALLET_WEIGHT_LIMIT_KG = 900
 const PALLET_VOLUME_LIMIT_M3 = 1.25
-const TRUCK_FILL_LIMIT = 0.98
+const PHYSICAL_FILL_LIMIT = 1
+const HARD_FILL_LIMIT = 1.02
+const TARGET_FILL_MIN = 0.75
+const TARGET_FILL_MAX = 0.88
+const HIGH_RETURNABLE_TARGET_FILL_MAX = 0.82
+const RETURNABLE_UNIT_PALLET_SHARE = 0.0035
+const RETURNABLE_RESERVE_SAFETY_FACTOR = 1.25
+const MAX_LOAD_SEARCH_EXTRA_MINUTES = 12
+const MAX_ACCESS_EXTRA_MINUTES = 8
+const MAX_RETURNABLE_EXTRA_MINUTES = 9
 const MIN_SCORE_IMPROVEMENT = 0.15
 const GLOBAL_IMPROVEMENT_PASSES = 3
 
@@ -176,8 +217,10 @@ export function buildDistributionPlan(
   const warnings: string[] = []
 
   const totalCapacityPallets = trucks.reduce((total, truck) => total + truck.capacityPallets, 0)
-  if (day.summary.pallets > totalCapacityPallets * TRUCK_FILL_LIMIT) {
-    warnings.push('La capacidad indicada no cubre todos los palets con el margen operativo recomendado.')
+  if (day.summary.pallets > totalCapacityPallets * PHYSICAL_FILL_LIMIT) {
+    warnings.push('La capacidad física indicada no cubre todos los palets del día.')
+  } else if (day.summary.pallets > totalCapacityPallets * TARGET_FILL_MAX) {
+    warnings.push('La capacidad indicada cubre el día, pero supera la ocupación inicial óptima recomendada.')
   }
 
   const drafts = buildBestDraftPlan(trucks, day.clients, context)
@@ -187,7 +230,11 @@ export function buildDistributionPlan(
   const unusedTrucks = plannedTrucks.filter((truck) => truck.clients.length === 0)
   const overloaded = assignedTrucks.filter((truck) => truck.summary.overflow)
   if (overloaded.length > 0) {
-    warnings.push(`${overloaded.length} camión(es) quedan por encima de la capacidad recomendada.`)
+    warnings.push(`${overloaded.length} camión(es) quedan por encima de la capacidad física o de la reserva necesaria.`)
+  }
+  const highRiskTrucks = assignedTrucks.filter((truck) => truck.summary.riskLevel === 'alto')
+  if (highRiskTrucks.length > 0) {
+    warnings.push(`${highRiskTrucks.length} ruta(s) tienen riesgo operativo alto por horarios, retornables o fricción de carga.`)
   }
   if (unusedTrucks.length > 0) {
     warnings.push(`${unusedTrucks.length} transporte(s) disponible(s) se dejan sin asignar por eficiencia.`)
@@ -210,6 +257,9 @@ export function buildDistributionPlan(
       usedTrucks: assignedTrucks.length,
       totalCapacityPallets,
       usedCapacityPallets: roundTwo(assignedTrucks.reduce((total, truck) => total + truck.capacityPallets, 0)),
+      reservedReturnablePallets: roundTwo(assignedTrucks.reduce((total, truck) => total + truck.summary.reservedReturnablePallets, 0)),
+      operationalFriction: roundOne(assignedTrucks.reduce((total, truck) => total + truck.summary.operationalFriction, 0)),
+      totalCostMinutes: roundOne(assignedTrucks.reduce((total, truck) => total + truck.summary.totalScore, 0)),
       operationalScore: roundOne(assignedTrucks.reduce((total, truck) => total + truck.summary.totalScore, 0)),
     },
   }
@@ -271,7 +321,7 @@ function buildBestDraftPlan(
 
   for (const order of buildAssignmentOrders(clients, context.depot)) {
     const initialDrafts = assignClientsGreedily(trucks, order.clients, context)
-    const score = totalDraftScore(initialDrafts)
+    const score = totalDraftScore(initialDrafts, context)
 
     if (score < bestScore) {
       bestDrafts = initialDrafts
@@ -430,12 +480,9 @@ function chooseBestTruckInsertion(
     const insertion = bestInsertion(draft.routeIds, client.clientId, draft.currentScore, context)
     const projection = projectLoad(draft, client)
     const feasible = isFeasibleProjection(projection, draft.type.palletCapacity)
-    const openingCost = draft.routeIds.length === 0 ? draft.type.fixedCostMinutes : 0
     const totalDelta =
-      insertion.deltaScore +
-      openingCost +
-      capacityPenalty(projection, draft.type.palletCapacity) +
-      fillPreferencePenalty(projection, draft.type.palletCapacity)
+      scoreDraftState(draft, insertion.routeScore, projection, insertion.routeIds, context) -
+      draftOptimizationScore(draft, context)
 
     if (!best || (feasible && !best.feasible) || (feasible === best.feasible && totalDelta < best.totalDelta)) {
       best = {
@@ -473,7 +520,10 @@ function optimizeDraftsGlobally(
   context: OptimizerContext,
   budget: OptimizationBudget,
 ) {
-  let current = closeInefficientTrucks(drafts.map(cloneDraft), context, budget)
+  let current = relieveOperationalPressure(
+    closeInefficientTrucks(drafts.map(cloneDraft), context, budget),
+    context,
+  )
 
   for (let pass = 0; pass < budget.passes; pass += 1) {
     const relocation = findBestRelocation(current, context, budget)
@@ -491,10 +541,182 @@ function optimizeDraftsGlobally(
       break
     }
 
-    current = closeInefficientTrucks(candidates[0].drafts, context, budget)
+    current = relieveOperationalPressure(
+      closeInefficientTrucks(candidates[0].drafts, context, budget),
+      context,
+    )
+  }
+
+  return relieveOperationalPressure(current, context)
+}
+
+function relieveOperationalPressure(
+  drafts: readonly DraftTruck[],
+  context: OptimizerContext,
+) {
+  let current = drafts.map(cloneDraft)
+  let improved = true
+  let attempts = 0
+
+  while (improved && attempts < current.length) {
+    improved = false
+    attempts += 1
+    const unusedIndexes = current
+      .map((draft, index) => ({ draft, index }))
+      .filter(({ draft }) => draft.routeIds.length === 0)
+      .sort((a, b) => a.draft.type.fixedCostMinutes - b.draft.type.fixedCostMinutes)
+      .map(({ index }) => index)
+
+    if (unusedIndexes.length === 0) {
+      break
+    }
+
+    const sourceIndexes = current
+      .map((draft, index) => ({
+        index,
+        pressure: draftOperationalPressure(draft, context),
+      }))
+      .filter(({ pressure }) => pressure > 0)
+      .sort((a, b) => b.pressure - a.pressure)
+      .slice(0, 5)
+      .map(({ index }) => index)
+
+    for (const sourceIndex of sourceIndexes) {
+      for (const targetIndex of unusedIndexes.slice(0, 3)) {
+        const candidate = trySplitDraftIntoEmptyTruck(current, sourceIndex, targetIndex, context)
+        if (!candidate) {
+          continue
+        }
+
+        if (totalDraftScore(candidate, context) + MIN_SCORE_IMPROVEMENT < totalDraftScore(current, context)) {
+          current = candidate
+          improved = true
+          break
+        }
+      }
+
+      if (improved) {
+        break
+      }
+    }
   }
 
   return current
+}
+
+function draftOperationalPressure(draft: DraftTruck, context: OptimizerContext) {
+  if (draft.routeIds.length <= 1) {
+    return 0
+  }
+
+  const routeMetrics = evaluateRoute(draft.routeIds, context)
+  const fillRatio = draft.pallets / Math.max(1, draft.type.palletCapacity)
+  const targetMax = targetFillMaxForReturnables(
+    routeMetrics.reservedReturnablePallets / Math.max(1, draft.type.palletCapacity),
+  )
+  const reserveOverflow = Math.max(
+    0,
+    draft.pallets + routeMetrics.reservedReturnablePallets - draft.type.palletCapacity,
+  )
+  const peakOverflow = Math.max(0, routeMetrics.peakLoadPallets - draft.type.palletCapacity)
+  const targetOverflow = Math.max(0, fillRatio - targetMax)
+  const latePressure = routeMetrics.windowPenalty / 120
+  const frictionPressure = routeMetrics.frictionPenalty / Math.max(1, draft.routeIds.length * 4.5)
+
+  return reserveOverflow * 12 + peakOverflow * 18 + targetOverflow * 10 + latePressure + frictionPressure
+}
+
+function trySplitDraftIntoEmptyTruck(
+  drafts: readonly DraftTruck[],
+  sourceIndex: number,
+  targetIndex: number,
+  context: OptimizerContext,
+) {
+  const sourceDraft = drafts[sourceIndex]
+  const targetDraft = drafts[targetIndex]
+  if (sourceDraft.routeIds.length <= 1 || targetDraft.routeIds.length > 0) {
+    return null
+  }
+
+  let best: DraftSetCandidate | null = null
+  const baselineScore = totalDraftScore(drafts, context)
+  for (const segment of splitSegmentsForRelief(sourceDraft.routeIds, context)) {
+    if (segment.length === 0 || segment.length >= sourceDraft.routeIds.length) {
+      continue
+    }
+
+    const movedClients = new Set(segment)
+    const remainingRoute = sourceDraft.routeIds.filter((clientId) => !movedClients.has(clientId))
+    const movedRoute = improveRoute(segment, context)
+    const next = drafts.map(cloneDraft)
+    next[sourceIndex] = rebuildDraft(next[sourceIndex], improveRoute(remainingRoute, context), context)
+    next[targetIndex] = rebuildDraft(next[targetIndex], movedRoute, context)
+    const delta = totalDraftScore(next, context) - baselineScore
+
+    if (!best || delta < best.delta) {
+      best = {
+        delta,
+        drafts: next,
+      }
+    }
+  }
+
+  return best && best.delta < -MIN_SCORE_IMPROVEMENT ? best.drafts : null
+}
+
+function splitSegmentsForRelief(routeIds: readonly string[], context: OptimizerContext) {
+  const segments: string[][] = []
+  const routeMetrics = evaluateRoute(routeIds, context)
+  const expensiveStops = routeMetrics.stops
+    .map((stop) => ({
+      clientId: stop.clientId,
+      score:
+        stop.windowPenalty +
+        stop.loadPenalty +
+        stop.accessPenalty +
+        stop.returnablePenalty +
+        stop.returnablePallets * 20 +
+        stop.lateMinutes * 8,
+    }))
+    .sort((a, b) => b.score - a.score)
+    .slice(0, 5)
+    .map((stop) => stop.clientId)
+  const centerIndexes = new Set<number>([
+    0,
+    Math.max(0, routeIds.length - 1),
+    Math.floor(routeIds.length / 2),
+  ])
+
+  for (const clientId of expensiveStops) {
+    const index = routeIds.indexOf(clientId)
+    if (index < 0) {
+      continue
+    }
+    centerIndexes.add(index)
+  }
+
+  for (const center of centerIndexes) {
+    for (let length = 1; length <= Math.min(5, routeIds.length - 1); length += 1) {
+      const start = clampInteger(center - Math.floor(length / 2), 0, routeIds.length - length)
+      segments.push(routeIds.slice(start, start + length))
+    }
+  }
+
+  return dedupeRouteSegments(segments).slice(0, 36)
+}
+
+function dedupeRouteSegments(segments: readonly string[][]) {
+  const seen = new Set<string>()
+  const deduped: string[][] = []
+  for (const segment of segments) {
+    const key = segment.join('\u001f')
+    if (seen.has(key)) {
+      continue
+    }
+    seen.add(key)
+    deduped.push(segment)
+  }
+  return deduped
 }
 
 function findBestRelocation(
@@ -527,7 +749,7 @@ function findBestRelocation(
       const routeWithoutClient = fromDraft.routeIds.filter((routeClientId) => routeClientId !== clientId)
       const fromLoad = loadForRoute(routeWithoutClient, context)
       const fromRouteScore = evaluateRoute(routeWithoutClient, context).operationalScore
-      const beforeFrom = draftOptimizationScore(fromDraft)
+      const beforeFrom = draftOptimizationScore(fromDraft, context)
 
       for (let toIndex = 0; toIndex < drafts.length; toIndex += 1) {
         if (toIndex === fromIndex) {
@@ -538,10 +760,10 @@ function findBestRelocation(
         const insertion = bestInsertion(toDraft.routeIds, clientId, toDraft.currentScore, context)
         const toLoad = projectLoad(toDraft, client)
         const rawDelta =
-          scoreDraftState(fromDraft, fromRouteScore, fromLoad) +
-          scoreDraftState(toDraft, insertion.routeScore, toLoad) -
+          scoreDraftState(fromDraft, fromRouteScore, fromLoad, routeWithoutClient, context) +
+          scoreDraftState(toDraft, insertion.routeScore, toLoad, insertion.routeIds, context) -
           beforeFrom -
-          draftOptimizationScore(toDraft)
+          draftOptimizationScore(toDraft, context)
 
         if (!best || rawDelta < best.rawDelta) {
           best = {
@@ -639,7 +861,7 @@ function findBestSwap(
         continue
       }
 
-      const beforePair = draftOptimizationScore(firstDraft) + draftOptimizationScore(secondDraft)
+      const beforePair = draftOptimizationScore(firstDraft, context) + draftOptimizationScore(secondDraft, context)
 
       for (const firstClientId of firstDraft.routeIds) {
         const firstClient = context.clientsById.get(firstClientId)
@@ -660,8 +882,8 @@ function findBestSwap(
           const firstScore = evaluateRoute(firstRoute, context).operationalScore
           const secondScore = evaluateRoute(secondRoute, context).operationalScore
           const rawDelta =
-            scoreDraftState(firstDraft, firstScore, firstLoad) +
-            scoreDraftState(secondDraft, secondScore, secondLoad) -
+            scoreDraftState(firstDraft, firstScore, firstLoad, firstRoute, context) +
+            scoreDraftState(secondDraft, secondScore, secondLoad, secondRoute, context) -
             beforePair
 
           if (!best || rawDelta < best.rawDelta) {
@@ -706,7 +928,7 @@ function buildRelocationCandidate(
   next[fromIndex] = rebuildDraft(next[fromIndex], improveRoute(fromRoute, context), context)
   next[toIndex] = rebuildDraft(next[toIndex], improveRoute(toRouteIds, context), context)
   return {
-    delta: totalDraftScore(next) - totalDraftScore(drafts),
+    delta: totalDraftScore(next, context) - totalDraftScore(drafts, context),
     drafts: next,
   }
 }
@@ -725,7 +947,7 @@ function buildSwapCandidate(
   next[firstIndex] = rebuildDraft(next[firstIndex], improveRoute(firstRoute, context), context)
   next[secondIndex] = rebuildDraft(next[secondIndex], improveRoute(secondRoute, context), context)
   return {
-    delta: totalDraftScore(next) - totalDraftScore(drafts),
+    delta: totalDraftScore(next, context) - totalDraftScore(drafts, context),
     drafts: next,
   }
 }
@@ -750,7 +972,7 @@ function closeInefficientTrucks(
       .sort((a, b) => {
         return (
           a.draft.routeIds.length - b.draft.routeIds.length ||
-          draftOptimizationScore(b.draft) - draftOptimizationScore(a.draft)
+          draftOptimizationScore(b.draft, context) - draftOptimizationScore(a.draft, context)
         )
       })
 
@@ -760,7 +982,7 @@ function closeInefficientTrucks(
         continue
       }
 
-      if (totalDraftScore(candidate) + MIN_SCORE_IMPROVEMENT < totalDraftScore(current)) {
+      if (totalDraftScore(candidate, context) + MIN_SCORE_IMPROVEMENT < totalDraftScore(current, context)) {
         current = candidate
         improved = true
         break
@@ -914,23 +1136,42 @@ function rebuildDraft(
   }
 }
 
-function totalDraftScore(drafts: readonly DraftTruck[]) {
-  return drafts.reduce((total, draft) => total + draftOptimizationScore(draft), 0)
+function totalDraftScore(drafts: readonly DraftTruck[], context: OptimizerContext) {
+  return (
+    drafts.reduce((total, draft) => total + draftOptimizationScore(draft, context), 0) +
+    routeBalancePenalty(drafts, context)
+  )
 }
 
-function draftOptimizationScore(draft: DraftTruck) {
-  return scoreDraftState(draft, draft.currentScore, draft)
+function draftOptimizationScore(draft: DraftTruck, context: OptimizerContext) {
+  return scoreDraftState(draft, draft.currentScore, draft, draft.routeIds, context)
 }
 
 function scoreDraftState(
   draft: DraftTruck,
   routeScore: number,
   load: LoadProjection,
+  routeIds: readonly string[],
+  context: OptimizerContext,
 ) {
   if (load.lines <= 0) {
     return 0
   }
-  return routeScore + draft.type.fixedCostMinutes + capacityPenalty(load, draft.type.palletCapacity)
+  const routeMetrics = routeIds.length > 0 ? evaluateRoute(routeIds, context) : null
+  const variableCost = routeMetrics ? vehicleVariableCost(draft.type, routeMetrics) : 0
+  const suitabilityPenalty = routeMetrics
+    ? vehicleSuitabilityPenalty(draft.type, load, routeMetrics, routeIds, context)
+    : 0
+  const cohesionPenalty = routeCohesionPenalty(routeIds, context)
+  return (
+    routeScore +
+    draft.type.fixedCostMinutes +
+    variableCost +
+    capacityPenalty(load, draft.type.palletCapacity, routeMetrics) +
+    fillPreferencePenalty(load, draft.type.palletCapacity, routeMetrics) +
+    suitabilityPenalty +
+    cohesionPenalty
+  )
 }
 
 function replaceClient(
@@ -943,25 +1184,306 @@ function replaceClient(
 
 function isFeasibleProjection(load: LoadProjection, capacityPallets: number) {
   return (
-    load.pallets <= capacityPallets * TRUCK_FILL_LIMIT &&
+    load.pallets <= capacityPallets * PHYSICAL_FILL_LIMIT &&
     load.weightKg <= capacityPallets * PALLET_WEIGHT_LIMIT_KG &&
     load.volumeM3 <= capacityPallets * PALLET_VOLUME_LIMIT_M3
   )
 }
 
-function capacityPenalty(load: LoadProjection, capacityPallets: number) {
-  const palletLimit = capacityPallets * TRUCK_FILL_LIMIT
+function capacityPenalty(
+  load: LoadProjection,
+  capacityPallets: number,
+  routeMetrics: RouteMetrics | null = null,
+) {
+  const palletLimit = capacityPallets * PHYSICAL_FILL_LIMIT
   const weightLimit = capacityPallets * PALLET_WEIGHT_LIMIT_KG
   const volumeLimit = capacityPallets * PALLET_VOLUME_LIMIT_M3
   const palletOverflow = Math.max(0, load.pallets - palletLimit)
+  const hardPalletOverflow = Math.max(0, load.pallets - capacityPallets * HARD_FILL_LIMIT)
+  const peakOverflow = Math.max(0, (routeMetrics?.peakLoadPallets ?? load.pallets) - palletLimit)
   const weightOverflow = Math.max(0, load.weightKg - weightLimit)
   const volumeOverflow = Math.max(0, load.volumeM3 - volumeLimit)
-  return palletOverflow * 3000 + (weightOverflow / 100) * 240 + volumeOverflow * 2200
+  return (
+    palletOverflow * 5200 +
+    hardPalletOverflow * 16000 +
+    peakOverflow * 4200 +
+    (weightOverflow / 100) * 360 +
+    volumeOverflow * 3200
+  )
 }
 
-function fillPreferencePenalty(load: LoadProjection, capacityPallets: number) {
+function fillPreferencePenalty(
+  load: LoadProjection,
+  capacityPallets: number,
+  routeMetrics: RouteMetrics | null = null,
+) {
   const fillRatio = load.pallets / Math.max(1, capacityPallets)
-  return fillRatio < 0.2 ? 6 : 0
+  const reservedRatio = (routeMetrics?.reservedReturnablePallets ?? 0) / Math.max(1, capacityPallets)
+  const targetMax = targetFillMaxForReturnables(reservedRatio)
+  const underfillPenalty =
+    fillRatio < TARGET_FILL_MIN
+      ? (TARGET_FILL_MIN - fillRatio) ** 2 * capacityPallets * 46
+      : 0
+  const excessiveFillPenalty =
+    fillRatio > targetMax
+      ? (fillRatio - targetMax) ** 2 * capacityPallets * 520
+      : 0
+  const returnableReservePenalty =
+    routeMetrics && load.pallets + routeMetrics.reservedReturnablePallets > capacityPallets * PHYSICAL_FILL_LIMIT
+      ? (load.pallets + routeMetrics.reservedReturnablePallets - capacityPallets) * 620
+      : 0
+  return underfillPenalty + excessiveFillPenalty + returnableReservePenalty
+}
+
+function routeBalancePenalty(drafts: readonly DraftTruck[], context: OptimizerContext) {
+  const activeDrafts = drafts.filter((draft) => draft.routeIds.length > 0)
+  if (activeDrafts.length <= 1) {
+    return 0
+  }
+
+  const workloads = activeDrafts.map((draft) => {
+    const routeMetrics = evaluateRoute(draft.routeIds, context)
+    return routeMetrics.totalMinutes + routeMetrics.frictionPenalty * 0.35 + draft.pallets * 6
+  })
+  const average = workloads.reduce((total, workload) => total + workload, 0) / workloads.length
+  const variance =
+    workloads.reduce((total, workload) => total + (workload - average) ** 2, 0) / workloads.length
+  const spread = Math.max(...workloads) - Math.min(...workloads)
+
+  return variance * 0.018 + Math.max(0, spread - 90) * 1.25
+}
+
+function vehicleVariableCost(type: TruckType, routeMetrics: RouteMetrics) {
+  const distanceFactor = type.palletCapacity <= 3 ? 0.12 : type.palletCapacity <= 6 ? 0.18 : 0.26
+  const driveTimeFactor = type.palletCapacity <= 3 ? 0.01 : type.palletCapacity <= 6 ? 0.016 : 0.024
+  return routeMetrics.distanceKm * distanceFactor + routeMetrics.driveMinutes * driveTimeFactor
+}
+
+function vehicleSuitabilityPenalty(
+  type: TruckType,
+  load: LoadProjection,
+  routeMetrics: RouteMetrics,
+  routeIds: readonly string[],
+  context: OptimizerContext,
+) {
+  const fillRatio = load.pallets / Math.max(1, type.palletCapacity)
+  const clients = routeIds
+    .map((clientId) => context.clientsById.get(clientId))
+    .filter((client): client is PlanningClient => Boolean(client))
+  const averageDifficulty =
+    clients.reduce((total, client) => total + client.loadDifficulty, 0) / Math.max(1, clients.length)
+  const difficultStops = clients.filter((client) => client.loadDifficulty >= 6).length
+  const returnablePressure = routeMetrics.reservedReturnablePallets / Math.max(1, type.palletCapacity)
+  let penalty = 0
+
+  if (type.palletCapacity <= 3) {
+    penalty += Math.max(0, fillRatio - 0.86) ** 2 * 850
+    penalty += Math.max(0, routeMetrics.distanceKm - 85) * 0.18
+  } else if (type.palletCapacity >= 8) {
+    penalty += fillRatio < 0.64 ? (0.64 - fillRatio) ** 2 * 180 : 0
+    penalty += Math.max(0, averageDifficulty - 4.8) * 4.8
+    penalty += difficultStops * 1.8
+  } else {
+    penalty += Math.max(0, fillRatio - 0.94) ** 2 * 420
+  }
+
+  penalty += Math.max(0, routeMetrics.peakLoadPallets - type.palletCapacity * 0.96) * 500
+  penalty += Math.max(0, returnablePressure - 0.12) * 90
+  return penalty
+}
+
+function routeCohesionPenalty(routeIds: readonly string[], context: OptimizerContext) {
+  const clients = routeIds
+    .map((clientId) => context.clientsById.get(clientId))
+    .filter((client): client is PlanningClient => Boolean(client))
+  if (clients.length <= 1) {
+    return 0
+  }
+
+  const centroid = {
+    lat: clients.reduce((total, client) => total + client.lat, 0) / clients.length,
+    lng: clients.reduce((total, client) => total + client.lng, 0) / clients.length,
+  }
+  const averageDispersionKm =
+    clients.reduce((total, client) => total + roadDistanceMeters(client, centroid) / 1000, 0) /
+    clients.length
+  const zoneChanges = clients.reduce((total, client, index) => {
+    const previous = index > 0 ? clients[index - 1] : null
+    return total + (previous && logisticZone(previous) !== logisticZone(client) ? 1 : 0)
+  }, 0)
+  const strictWindows = clients.filter((client) => client.window.endMinute !== null)
+  const windowSpread =
+    strictWindows.length > 1
+      ? Math.max(...strictWindows.map((client) => client.window.endMinute ?? 0)) -
+        Math.min(...strictWindows.map((client) => client.window.endMinute ?? 0))
+      : 0
+  const productFamilies = new Set(clients.flatMap((client) => client.productTypes))
+  const productPenalty = Math.max(0, productFamilies.size - 4) * 0.8
+
+  return averageDispersionKm * 1.15 + zoneChanges * 0.9 + Math.max(0, windowSpread - 240) * 0.012 + productPenalty
+}
+
+function targetFillMaxForReturnables(reservedRatio: number) {
+  return clamp(
+    TARGET_FILL_MAX - reservedRatio * 0.7,
+    HIGH_RETURNABLE_TARGET_FILL_MAX,
+    TARGET_FILL_MAX,
+  )
+}
+
+function estimateRouteReturnableReserve(routeIds: readonly string[], context: OptimizerContext) {
+  const expectedReturnables = routeIds.reduce((total, clientId) => {
+    const client = context.clientsById.get(clientId)
+    return total + (client ? estimateClientReturnablePallets(client) : 0)
+  }, 0)
+  return expectedReturnables * RETURNABLE_RESERVE_SAFETY_FACTOR
+}
+
+function estimateClientReturnablePallets(client: PlanningClient) {
+  const declaredReturnables = Math.max(0, client.returnableUnits) * RETURNABLE_UNIT_PALLET_SHARE
+  const fallbackReturnables =
+    client.hasReturnables && declaredReturnables <= 0
+      ? Math.min(0.08, Math.max(0.02, client.pallets * 0.12))
+      : 0
+  return declaredReturnables + fallbackReturnables
+}
+
+function estimateAccessPenaltyMinutes(client: PlanningClient) {
+  const accessDifficulty = Math.max(0, client.loadDifficulty - 2) * 0.22
+  const largeDrop = Math.max(0, client.pallets - 0.45) * 1.4
+  const heavyDrop = Math.max(0, client.weightKg - 350) / 350
+  return clamp(accessDifficulty + largeDrop + heavyDrop, 0, MAX_ACCESS_EXTRA_MINUTES)
+}
+
+function estimateLoadFrictionMinutes(
+  client: PlanningClient,
+  stopPosition: number,
+  remainingDeliveryPallets: number,
+  collectedReturnablePallets: number,
+  routeSize: number,
+) {
+  const productFragmentation =
+    client.productTypes.length * 0.55 + Math.max(0, client.lines - 8) * 0.055
+  const accessSearch = stopPosition ** 1.35 * (client.loadDifficulty * LOAD_ACCESS_FACTOR * 0.26 + productFragmentation)
+  const returnableBlocking =
+    remainingDeliveryPallets > 0.2
+      ? clamp((collectedReturnablePallets / remainingDeliveryPallets) * 1.8, 0, 4.2)
+      : 0
+  const longRouteFatigue = routeSize > 18 ? Math.min(2.5, (routeSize - 18) * 0.09) * stopPosition : 0
+  return clamp(accessSearch + returnableBlocking + longRouteFatigue, 0, MAX_LOAD_SEARCH_EXTRA_MINUTES)
+}
+
+function estimateReturnableHandlingMinutes(
+  client: PlanningClient,
+  clientReturnablePallets: number,
+  remainingDeliveryPallets: number,
+  collectedReturnablePallets: number,
+) {
+  if (!client.hasReturnables && clientReturnablePallets <= 0) {
+    return 0
+  }
+  const handling = clientReturnablePallets * 7 + Math.max(0, client.returnableUnits) * 0.018
+  const blockingRisk =
+    remainingDeliveryPallets > 0.25
+      ? (collectedReturnablePallets / remainingDeliveryPallets) * 1.1
+      : 0
+  return clamp(handling + blockingRisk, 0, MAX_RETURNABLE_EXTRA_MINUTES)
+}
+
+function serviceWindowPenalty(client: PlanningClient, lateMinutes: number) {
+  if (lateMinutes <= 0) {
+    return 0
+  }
+
+  const windowSpan =
+    client.window.startMinute !== null && client.window.endMinute !== null
+      ? client.window.endMinute - client.window.startMinute
+      : Number.POSITIVE_INFINITY
+  const narrowWindowMultiplier = windowSpan <= 120 ? 0.85 : windowSpan <= 240 ? 0.4 : 0
+  const priorityMultiplier = 1 + client.priorityScore * 0.22 + narrowWindowMultiplier
+  return lateMinutes * LATE_PENALTY_FACTOR * priorityMultiplier
+}
+
+function logisticZone(client: PlanningClient) {
+  return `${client.postalCode.slice(0, 3)}-${client.city.trim().toLocaleUpperCase('es-ES')}`
+}
+
+function truckRisks(
+  draft: DraftTruck,
+  routeMetrics: RouteMetrics,
+  loadOverflow: boolean,
+  capacityUse: number,
+  targetCapacityUse: number,
+) {
+  const risks: string[] = []
+  if (draft.routeIds.length === 0) {
+    return risks
+  }
+
+  if (capacityUse > targetCapacityUse) {
+    risks.push(`Ocupación inicial ${roundOne(capacityUse)}% por encima del objetivo ${roundOne(targetCapacityUse)}%`)
+  }
+  if (routeMetrics.peakLoadPallets > draft.type.palletCapacity * PHYSICAL_FILL_LIMIT) {
+    risks.push('Los retornables pueden superar la capacidad física durante la ruta')
+  }
+  if (loadOverflow) {
+    risks.push('La carga visual necesita más huecos que los disponibles con la reserva de retornables')
+  }
+  if (routeMetrics.lateMinutes > 0) {
+    risks.push(`${roundOne(routeMetrics.lateMinutes)} min de retraso acumulado en ventanas de entrega`)
+  }
+  if (routeMetrics.frictionPenalty > draft.routeIds.length * 5) {
+    risks.push('Fricción de descarga alta por acceso, mezcla de carga o retornables')
+  }
+  if (routeMetrics.reservedReturnablePallets > Math.max(0.8, draft.type.palletCapacity * 0.16)) {
+    risks.push(`${roundTwo(routeMetrics.reservedReturnablePallets)} palets reservados para retornables`)
+  }
+  return risks
+}
+
+function riskLevelFor(risks: readonly string[], routeMetrics: RouteMetrics): 'bajo' | 'medio' | 'alto' {
+  if (risks.length >= 3 || routeMetrics.windowPenalty > 180 || routeMetrics.peakLoadPallets > routeMetrics.reservedReturnablePallets + 8) {
+    return 'alto'
+  }
+  if (risks.length > 0 || routeMetrics.windowPenalty > 0 || routeMetrics.frictionPenalty > 35) {
+    return 'medio'
+  }
+  return 'bajo'
+}
+
+function truckExplanation(
+  draft: DraftTruck,
+  routeMetrics: RouteMetrics,
+  capacityUse: number,
+  targetCapacityUse: number,
+  variableCostMinutes: number,
+  occupancyPenalty: number,
+  suitabilityPenalty: number,
+) {
+  if (draft.routeIds.length === 0) {
+    return ['Transporte disponible sin salida: el coste fijo no compensa abrir otra ruta.']
+  }
+
+  const explanations = [
+    `${draft.type.label}: ${roundOne(capacityUse)}% de ocupación inicial frente a objetivo ${roundOne(targetCapacityUse)}%.`,
+    `Coste operativo: ${roundOne(routeMetrics.totalMinutes)} min de ruta, ${roundOne(draft.type.fixedCostMinutes)} min fijos y ${roundOne(variableCostMinutes)} min variables.`,
+    `Reserva de retornables: ${roundTwo(routeMetrics.reservedReturnablePallets)} palets; pico dinámico estimado ${roundTwo(routeMetrics.peakLoadPallets)} palets.`,
+  ]
+
+  if (routeMetrics.lateMinutes > 0) {
+    explanations.push(`Se penalizan ${roundOne(routeMetrics.lateMinutes)} min de retraso, ponderados por prioridad y franja horaria.`)
+  }
+  if (occupancyPenalty > 0) {
+    explanations.push('La ocupación se corrige contra una zona rentable, no contra el llenado máximo.')
+  }
+  if (suitabilityPenalty > 0) {
+    explanations.push('El tipo de vehículo añade penalización por tamaño, acceso o uso insuficiente.')
+  }
+  if (routeMetrics.frictionPenalty > 0) {
+    explanations.push(`Fricción operativa estimada: ${roundOne(routeMetrics.frictionPenalty)} min por acceso, búsqueda de producto y retornables.`)
+  }
+
+  return explanations
 }
 
 function improveRoute(routeIds: readonly string[], context: OptimizerContext) {
@@ -1082,6 +1604,7 @@ function finalizeTruck(
     const optimizedSequence = index + 1
     return {
       ...client,
+      serviceMinutes: stop?.serviceMinutes ?? client.serviceMinutes,
       optimizedSequence,
       arrival: stop?.arrival ?? 'Sin hora',
       windowStatus: stop?.windowStatus ?? 'ok',
@@ -1089,6 +1612,11 @@ function finalizeTruck(
       lateMinutes: stop?.lateMinutes ?? 0,
       routePriorityPenalty: stop?.priorityPenalty ?? 0,
       routeLoadPenalty: stop?.loadPenalty ?? 0,
+      routeAccessPenalty: stop?.accessPenalty ?? 0,
+      routeReturnablePenalty: stop?.returnablePenalty ?? 0,
+      routeWindowPenalty: stop?.windowPenalty ?? 0,
+      routeProjectedLoadPallets: stop?.projectedLoadPallets ?? 0,
+      routeCollectedReturnablePallets: stop?.collectedReturnablePallets ?? 0,
       loadZone: Math.min(
         draft.type.palletCapacity,
         Math.max(1, Math.ceil(optimizedSequence * draft.type.palletCapacity / Math.max(1, draft.routeIds.length))),
@@ -1096,16 +1624,43 @@ function finalizeTruck(
     }
   })
   const masterRows = clients.flatMap((client) => rowsByClient.get(client.clientId) ?? [])
-  const loadPlan = buildTruckLoadPlan(clients, masterRows, { slots: draft.type.palletCapacity })
+  const loadPlan = buildTruckLoadPlan(clients, masterRows, {
+    slots: draft.type.palletCapacity,
+    reservedReturnablePallets: optimizedEval.reservedReturnablePallets,
+  })
   const savingsKm = originalEval.distanceKm - optimizedEval.distanceKm
   const scoreImprovement = originalEval.operationalScore - optimizedEval.operationalScore
   const scoreImprovementPercent =
     originalEval.operationalScore > 0 ? (scoreImprovement / originalEval.operationalScore) * 100 : 0
   const capacityUse = draft.type.palletCapacity > 0 ? (draft.pallets / draft.type.palletCapacity) * 100 : 0
-  const overflow =
-    draft.pallets > draft.type.palletCapacity * TRUCK_FILL_LIMIT ||
+  const targetCapacityUse = targetFillMaxForReturnables(
+    optimizedEval.reservedReturnablePallets / Math.max(1, draft.type.palletCapacity),
+  ) * 100
+  const variableCostMinutes = clients.length > 0 ? vehicleVariableCost(draft.type, optimizedEval) : 0
+  const occupancyPenalty = clients.length > 0
+    ? fillPreferencePenalty(draft, draft.type.palletCapacity, optimizedEval)
+    : 0
+  const suitabilityPenalty = clients.length > 0
+    ? vehicleSuitabilityPenalty(draft.type, draft, optimizedEval, draft.routeIds, context)
+    : 0
+  const cohesionPenalty = clients.length > 0 ? routeCohesionPenalty(draft.routeIds, context) : 0
+  const physicalOverflow =
+    draft.pallets > draft.type.palletCapacity * PHYSICAL_FILL_LIMIT ||
+    optimizedEval.peakLoadPallets > draft.type.palletCapacity * PHYSICAL_FILL_LIMIT ||
     draft.weightKg > draft.type.palletCapacity * PALLET_WEIGHT_LIMIT_KG ||
     draft.volumeM3 > draft.type.palletCapacity * PALLET_VOLUME_LIMIT_M3
+  const overflow = physicalOverflow
+  const risks = truckRisks(draft, optimizedEval, loadPlan.summary.overflow, capacityUse, targetCapacityUse)
+  const riskLevel = riskLevelFor(risks, optimizedEval)
+  const explanation = truckExplanation(
+    draft,
+    optimizedEval,
+    capacityUse,
+    targetCapacityUse,
+    variableCostMinutes,
+    occupancyPenalty,
+    suitabilityPenalty,
+  )
 
   return {
     id: draft.id,
@@ -1137,7 +1692,18 @@ function finalizeTruck(
       capacityUse: roundOne(capacityUse),
       overflow,
       activationCostMinutes: clients.length > 0 ? draft.type.fixedCostMinutes : 0,
-      totalScore: roundOne(optimizedEval.operationalScore + (clients.length > 0 ? draft.type.fixedCostMinutes : 0)),
+      variableCostMinutes: roundOne(variableCostMinutes),
+      occupancyPenalty: roundOne(occupancyPenalty),
+      vehicleSuitabilityPenalty: roundOne(suitabilityPenalty),
+      cohesionPenalty: roundOne(cohesionPenalty),
+      operationalFriction: optimizedEval.frictionPenalty,
+      reservedReturnablePallets: optimizedEval.reservedReturnablePallets,
+      peakLoadPallets: optimizedEval.peakLoadPallets,
+      targetCapacityUse: roundOne(targetCapacityUse),
+      riskLevel,
+      risks,
+      explanation,
+      totalScore: roundOne(draftOptimizationScore(draft, context)),
     },
   }
 }
@@ -1153,8 +1719,19 @@ function evaluateRoute(routeIds: readonly string[], context: OptimizerContext): 
   let totalDriveMinutes = 0
   let totalWaitMinutes = 0
   let totalLateMinutes = 0
+  let totalWindowPenalty = 0
   let totalPriorityPenalty = 0
   let totalLoadPenalty = 0
+  let totalAccessPenalty = 0
+  let totalReturnablePenalty = 0
+  let totalFrictionPenalty = 0
+  let totalServiceMinutes = 0
+  let remainingDeliveryPallets = routeIds.reduce((total, clientId) => {
+    return total + (context.clientsById.get(clientId)?.pallets ?? 0)
+  }, 0)
+  let collectedReturnablePallets = 0
+  let peakLoadPallets = remainingDeliveryPallets
+  const reservedReturnablePallets = estimateRouteReturnableReserve(routeIds, context)
   let currentMinute = START_MINUTE
   const stops: RouteStopMetrics[] = []
   const path = [null, ...routeIds, null]
@@ -1196,51 +1773,87 @@ function evaluateRoute(routeIds: readonly string[], context: OptimizerContext): 
     }
 
     const stopNumber = index + 1
+    const stopPosition = (stopNumber - 1) / Math.max(1, routeIds.length - 1)
+    const clientReturnablePallets = estimateClientReturnablePallets(client)
+    const accessPenalty = estimateAccessPenaltyMinutes(client)
+    const loadPenalty = estimateLoadFrictionMinutes(
+      client,
+      stopPosition,
+      remainingDeliveryPallets,
+      collectedReturnablePallets,
+      routeIds.length,
+    )
+    const returnablePenalty = estimateReturnableHandlingMinutes(
+      client,
+      clientReturnablePallets,
+      remainingDeliveryPallets,
+      collectedReturnablePallets,
+    )
+    const serviceMinutes = client.serviceMinutes + accessPenalty + loadPenalty + returnablePenalty
+    const windowPenalty = serviceWindowPenalty(client, lateMinutes)
     const priorityPenalty =
       Math.max(0, currentMinute - START_MINUTE) *
       client.priorityScore *
       PRIORITY_DELAY_FACTOR
-    const loadPosition = (stopNumber - 1) / Math.max(1, routeIds.length - 1)
-    const loadPenalty = client.loadDifficulty * loadPosition * LOAD_ACCESS_FACTOR
 
     totalWaitMinutes += waitMinutes
     totalLateMinutes += lateMinutes
+    totalWindowPenalty += windowPenalty
     totalPriorityPenalty += priorityPenalty
     totalLoadPenalty += loadPenalty
+    totalAccessPenalty += accessPenalty
+    totalReturnablePenalty += returnablePenalty
+    totalFrictionPenalty += loadPenalty + accessPenalty + returnablePenalty
+    totalServiceMinutes += serviceMinutes
+    remainingDeliveryPallets = Math.max(0, remainingDeliveryPallets - client.pallets)
+    collectedReturnablePallets += clientReturnablePallets
+    peakLoadPallets = Math.max(peakLoadPallets, remainingDeliveryPallets + collectedReturnablePallets)
     stops.push({
       clientId: client.clientId,
       arrival: formatMinutes(currentMinute),
-      serviceMinutes: roundOne(client.serviceMinutes),
+      baseServiceMinutes: roundOne(client.serviceMinutes),
+      serviceMinutes: roundOne(serviceMinutes),
       waitMinutes: roundOne(waitMinutes),
       lateMinutes: roundOne(lateMinutes),
+      windowPenalty: roundOne(windowPenalty),
       priorityPenalty: roundOne(priorityPenalty),
       loadPenalty: roundOne(loadPenalty),
+      accessPenalty: roundOne(accessPenalty),
+      returnablePenalty: roundOne(returnablePenalty),
+      returnablePallets: roundTwo(clientReturnablePallets),
+      projectedLoadPallets: roundTwo(remainingDeliveryPallets + collectedReturnablePallets),
+      collectedReturnablePallets: roundTwo(collectedReturnablePallets),
       windowStatus: status,
     })
-    currentMinute += client.serviceMinutes
+    currentMinute += serviceMinutes
   }
 
-  const serviceMinutes = routeIds.reduce((total, clientId) => {
-    return total + (context.clientsById.get(clientId)?.serviceMinutes ?? 0)
-  }, 0)
   const fuelPenalty = (totalDistanceMeters / 1000) * FUEL_EQUIVALENT_MIN_PER_KM
   const operationalScore =
     totalDriveMinutes +
-    serviceMinutes +
+    totalServiceMinutes +
     totalWaitMinutes * WAIT_PENALTY_FACTOR +
-    totalLateMinutes * LATE_PENALTY_FACTOR +
+    totalWindowPenalty +
     totalPriorityPenalty +
     totalLoadPenalty +
+    totalAccessPenalty +
+    totalReturnablePenalty +
     fuelPenalty
 
   const metrics = {
     distanceKm: roundOne(totalDistanceMeters / 1000),
     driveMinutes: roundOne(totalDriveMinutes),
-    serviceMinutes: roundOne(serviceMinutes),
+    serviceMinutes: roundOne(totalServiceMinutes),
     waitMinutes: roundOne(totalWaitMinutes),
     lateMinutes: roundOne(totalLateMinutes),
+    windowPenalty: roundOne(totalWindowPenalty),
     priorityPenalty: roundOne(totalPriorityPenalty),
     loadPenalty: roundOne(totalLoadPenalty),
+    accessPenalty: roundOne(totalAccessPenalty),
+    returnablePenalty: roundOne(totalReturnablePenalty),
+    frictionPenalty: roundOne(totalFrictionPenalty),
+    reservedReturnablePallets: roundTwo(reservedReturnablePallets),
+    peakLoadPallets: roundTwo(peakLoadPallets),
     fuelPenalty: roundOne(fuelPenalty),
     operationalScore: roundOne(operationalScore),
     totalMinutes: roundOne(currentMinute - START_MINUTE),
@@ -1346,6 +1959,14 @@ function formatMinutes(totalMinutes: number) {
 
 function toRadians(value: number) {
   return (value * Math.PI) / 180
+}
+
+function clamp(value: number, minimum: number, maximum: number) {
+  return Math.min(maximum, Math.max(minimum, value))
+}
+
+function clampInteger(value: number, minimum: number, maximum: number) {
+  return Math.round(clamp(value, minimum, maximum))
 }
 
 function roundOne(value: number) {

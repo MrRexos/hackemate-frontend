@@ -1,8 +1,9 @@
-import { type CSSProperties, useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { Fragment, type CSSProperties, useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import * as THREE from 'three'
 import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js'
 import type { LoadPiece, TruckLoadPlan, TruckPallet } from '@/utils/loadPlanner'
 import { materialRuleFor } from '@/utils/loadPlanner'
+import { formatDisplayProductTitle, splitDisplayProductNames } from '@/utils/productDisplay'
 import truckTopImage from '../../assets/truck_top.png'
 import vanTopImage from '../../assets/van_top.png'
 
@@ -421,14 +422,17 @@ function RoutePalletInfoCard({
         <div className="route-pallet-content-list">
           {pallet.pieces.map((piece) => {
             const rule = materialRuleFor(piece.productType)
-            const products = formatPieceProducts(piece)
+            const products = formatDisplayProductTitle(piece.products, rule.label)
+            const materials = formatPieceMaterials(piece)
             return (
               <div className="route-pallet-content-item" key={piece.id}>
                 <i style={{ backgroundColor: piece.color }} />
                 <span>
-                  <strong title={products}>{products}</strong>
-                  <small>
-                    {rule.label} · {formatPieceMaterials(piece)}
+                  <strong title={products}>
+                    <ProductNameLines fallback={rule.label} products={piece.products} />
+                  </strong>
+                  <small title={materials}>
+                    {rule.label} · {materials}
                   </small>
                 </span>
                 <em>{formatPieceQuantity(piece)}</em>
@@ -1148,14 +1152,43 @@ function formatPallets(value: number) {
   return decimalFormatter.format(value)
 }
 
-function formatPieceProducts(piece: LoadPiece) {
-  return piece.products.length > 0
-    ? piece.products.join(' + ')
-    : materialRuleFor(piece.productType).label
+function ProductNameLines({
+  fallback,
+  products,
+}: {
+  fallback: string
+  products: readonly string[]
+}) {
+  const productNames = splitDisplayProductNames(products)
+
+  if (productNames.length === 0) {
+    return fallback
+  }
+
+  return (
+    <>
+      {productNames.map((product, index) => (
+        <Fragment key={`${product}-${index}`}>
+          {index > 0 ? <br /> : null}
+          {product}
+        </Fragment>
+      ))}
+    </>
+  )
 }
 
 function formatPieceMaterials(piece: LoadPiece) {
-  return piece.materialCodes.length > 0 ? piece.materialCodes.join(', ') : 'Sin código'
+  if (piece.materialCodes.length === 0) {
+    return 'Sin código'
+  }
+
+  const quantitiesByMaterial = new Map(piece.materialBreakdown.map((item) => [item.material, item.quantity]))
+  return piece.materialCodes
+    .map((material) => {
+      const quantity = quantitiesByMaterial.get(material)
+      return typeof quantity === 'number' ? `${material} x${decimalFormatter.format(quantity)}` : material
+    })
+    .join(', ')
 }
 
 function formatPieceQuantity(piece: LoadPiece) {

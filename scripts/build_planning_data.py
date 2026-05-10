@@ -235,6 +235,7 @@ def build_dataset() -> dict[str, Any]:
     rows_by_date_client_type: dict[tuple[str, str, str], dict[str, Any]] = {}
     product_names_by_group: dict[tuple[str, str, str], Counter[str]] = defaultdict(Counter)
     material_counts_by_group: dict[tuple[str, str, str], Counter[str]] = defaultdict(Counter)
+    material_quantities_by_group: dict[tuple[str, str, str], Counter[str]] = defaultdict(Counter)
     metric_sources_by_group: dict[tuple[str, str, str], Counter[str]] = defaultdict(Counter)
     date_product_totals: dict[str, Counter[str]] = defaultdict(Counter)
     date_materials: dict[str, set[str]] = defaultdict(set)
@@ -335,6 +336,7 @@ def build_dataset() -> dict[str, Any]:
             grouped_row["_dimensionWeight"] += dimension_weight
         product_names_by_group[group_key][product] += quantity
         material_counts_by_group[group_key][material] += 1
+        material_quantities_by_group[group_key][material] += quantity
         metric_sources_by_group[group_key][metrics["source"]] += 1
         metric_sources_by_group[(group_key, "dimensions")][dimensions["dimensionSource"]] += 1
         date_product_totals[date][product] += quantity
@@ -348,6 +350,13 @@ def build_dataset() -> dict[str, Any]:
         top_materials = [material for material, _ in material_counts_by_group[group_key].most_common(4)]
         grouped_row["product"] = " + ".join(top_products) if top_products else grouped_row["product"]
         grouped_row["material"] = ", ".join(top_materials) if top_materials else grouped_row["material"]
+        grouped_row["materialBreakdown"] = [
+            {
+                "material": material,
+                "quantity": round_float(quantity, 2),
+            }
+            for material, quantity in material_quantities_by_group[group_key].most_common()
+        ]
         grouped_row["quantity"] = round_float(grouped_row["quantity"], 2)
         grouped_row["weightKg"] = round_float(grouped_row["weightKg"], 3)
         grouped_row["volumeM3"] = round_float(grouped_row["volumeM3"], 5)

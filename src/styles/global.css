@@ -169,6 +169,7 @@ a {
 .route-title-row h1,
 .route-map-heading h2,
 .route-section-title,
+.route-distribution-map-title,
 .route-truck-heading h2 {
   color: #4a3b30;
   font-size: 27px;
@@ -618,6 +619,13 @@ a {
   text-transform: uppercase;
 }
 
+.route-order-products li strong {
+  display: block;
+  line-height: 1.28;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
 .route-order-products li span::before {
   content: '\00b7';
   margin-right: 8px;
@@ -1017,10 +1025,9 @@ a {
   font-size: 16px;
   font-weight: 800;
   line-height: 1.15;
-  overflow: hidden;
-  text-overflow: ellipsis;
+  overflow-wrap: anywhere;
   text-transform: uppercase;
-  white-space: nowrap;
+  white-space: normal;
 }
 
 .route-products-card small {

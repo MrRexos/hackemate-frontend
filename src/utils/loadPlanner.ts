@@ -7,11 +7,17 @@ export type ClientLoadInput = {
   pallets: number
 }
 
+export type MaterialBreakdownItem = {
+  material: string
+  quantity: number
+}
+
 export type MasterLoadRow = {
   lineId: string
   clientId: string
   clientName: string
   material: string
+  materialBreakdown?: readonly MaterialBreakdownItem[]
   product: string
   quantity: number
   unit: string
@@ -49,6 +55,7 @@ export type LoadPiece = {
   clientName: string
   stop: number
   productType: string
+  materialBreakdown: readonly MaterialBreakdownItem[]
   materialCodes: readonly string[]
   products: readonly string[]
   quantity: number
@@ -80,6 +87,7 @@ export type TruckPallet = {
   volumeM3: number
   stopRange: readonly [number, number] | null
   isEmpty: boolean
+  reservedForReturnables: boolean
   warnings: readonly string[]
 }
 
@@ -95,6 +103,8 @@ export type TruckLoadPlan = {
     utilization: number
     leftWeightKg: number
     rightWeightKg: number
+    reservedReturnablePallets: number
+    reservedSlots: number
     overflow: boolean
   }
   constraints: {
@@ -173,9 +183,17 @@ export function materialRuleFor(productType: string): MaterialRule {
 export function buildTruckLoadPlan(
   clients: readonly ClientLoadInput[],
   rows: readonly MasterLoadRow[],
-  options: { slots?: number } = {},
+  options: { reservedReturnablePallets?: number; slots?: number } = {},
 ): TruckLoadPlan {
   const truckSlots = options.slots ?? 8
+  const reservedReturnablePallets = Math.max(0, options.reservedReturnablePallets ?? 0)
+  const fullReserveSlots = Math.floor(reservedReturnablePallets / PALLET_SHARE_LIMIT)
+  const fractionalReserve = reservedReturnablePallets - fullReserveSlots * PALLET_SHARE_LIMIT
+  const reservedSlots = Math.min(
+    Math.max(0, truckSlots - 1),
+    fullReserveSlots + (fractionalReserve >= 0.65 ? 1 : 0),
+  )
+  const usableSlots = Math.max(1, truckSlots - reservedSlots)
   const orderedClients = [...clients].sort((a, b) => a.optimizedSequence - b.optimizedSequence)
   const rowsByClient = groupRowsByClient(rows)
   const palletDrafts: PalletDraft[] = []
@@ -212,7 +230,7 @@ export function buildTruckLoadPlan(
         })
 
         if (portionShare <= 0.0001) {
-          if (palletDrafts.length >= truckSlots - 1) {
+          if (palletDrafts.length >= usableSlots - 1) {
             overflow = true
             current.warnings.push('Capacidad ajustada al límite del camión')
             current = forceAddPiece(current, piece, remainingShare, remainingWeight, remainingVolume, remainingQuantity, splitIndex)
@@ -243,12 +261,12 @@ export function buildTruckLoadPlan(
     palletDrafts.push(current)
   }
 
-  if (palletDrafts.length > truckSlots) {
+  if (palletDrafts.length > usableSlots) {
     overflow = true
   }
 
-  const occupiedDrafts = palletDrafts.slice(0, truckSlots)
-  const pallets = buildTruckSlots(occupiedDrafts, truckSlots)
+  const occupiedDrafts = palletDrafts.slice(0, usableSlots)
+  const pallets = buildTruckSlots(occupiedDrafts, truckSlots, reservedSlots)
   const materialLegend = [...new Set(pallets.flatMap((pallet) => pallet.pieces.map((piece) => piece.productType)))]
     .map(materialRuleFor)
     .sort((a, b) => a.stackRank - b.stackRank)
@@ -275,6 +293,8 @@ export function buildTruckLoadPlan(
       utilization: roundOne((usedPallets / truckSlots) * 100),
       leftWeightKg: roundOne(leftWeightKg),
       rightWeightKg: roundOne(rightWeightKg),
+      reservedReturnablePallets: roundTwo(reservedReturnablePallets),
+      reservedSlots,
       overflow,
     },
     constraints: {
@@ -304,6 +324,10 @@ function buildClientPieces(client: ClientLoadInput, rows: readonly MasterLoadRow
   }>()
 
   for (const row of rows) {
+    if (row.returnable) {
+      continue
+    }
+
     const rule = materialRuleFor(row.productType)
     const key = row.productType || 'otros'
     const current = groups.get(key) ?? {
@@ -312,6 +336,7 @@ function buildClientPieces(client: ClientLoadInput, rows: readonly MasterLoadRow
       clientName: client.name,
       stop: client.optimizedSequence,
       productType: key,
+      materialBreakdown: [],
       materialCodes: [],
       products: [],
       quantity: 0,
@@ -342,7 +367,12 @@ function buildClientPieces(client: ClientLoadInput, rows: readonly MasterLoadRow
       current.dimensionWeight += dimensionWeight
     }
     current.dimensionSources = addUnique(current.dimensionSources, row.dimensionSource ?? 'sin dimensiones')
-    current.materialCodes = addUnique(current.materialCodes, row.material)
+    const materialBreakdown = materialBreakdownForRow(row)
+    current.materialBreakdown = mergeMaterialBreakdown(current.materialBreakdown, materialBreakdown)
+    current.materialCodes = materialBreakdown.reduce(
+      (codes, item) => addUnique(codes, item.material),
+      current.materialCodes,
+    )
     current.products = addUnique(current.products, row.product)
     current.rowCount += 1
     groups.set(key, current)
@@ -462,6 +492,10 @@ function addPiece(
   current.pieces.push({
     ...piece,
     id: `${piece.baseId}-${splitIndex}`,
+    materialBreakdown: scaleMaterialBreakdown(
+      piece.materialBreakdown,
+      piece.quantity > 0 ? quantity / piece.quantity : palletShare / Math.max(piece.palletShare, 0.0001),
+    ),
     palletShare: roundFour(palletShare),
     weightKg: roundOne(weightKg),
     volumeM3: roundFour(volumeM3),
@@ -492,8 +526,13 @@ function forceAddPiece(
   return current
 }
 
-function buildTruckSlots(occupiedDrafts: readonly PalletDraft[], truckSlots: number) {
+function buildTruckSlots(
+  occupiedDrafts: readonly PalletDraft[],
+  truckSlots: number,
+  reservedSlots: number,
+) {
   const pallets: TruckPallet[] = []
+  const reservedStartIndex = Math.max(0, truckSlots - reservedSlots)
   for (let index = 0; index < truckSlots; index += 1) {
     const draft = occupiedDrafts[index] ?? createPalletDraft()
     const row = Math.floor(index / 2)
@@ -502,6 +541,7 @@ function buildTruckSlots(occupiedDrafts: readonly PalletDraft[], truckSlots: num
     const stops = clients.map((client) => client.stop)
     const stopRange = stops.length > 0 ? ([Math.min(...stops), Math.max(...stops)] as const) : null
     const isEmpty = draft.pieces.length === 0
+    const reservedForReturnables = isEmpty && index >= reservedStartIndex
 
     pallets.push({
       id: `P${index + 1}`,
@@ -510,7 +550,7 @@ function buildTruckSlots(occupiedDrafts: readonly PalletDraft[], truckSlots: num
       row,
       lane,
       positionLabel: positionLabel(row, truckSlots),
-      accessLabel: stopRange ? stopRangeLabel(stopRange) : 'Reserva',
+      accessLabel: stopRange ? stopRangeLabel(stopRange) : reservedForReturnables ? 'Reserva retornables' : 'Reserva',
       clients,
       pieces: draft.pieces,
       usedPallets: roundTwo(draft.usedPallets),
@@ -519,6 +559,7 @@ function buildTruckSlots(occupiedDrafts: readonly PalletDraft[], truckSlots: num
       volumeM3: roundTwo(draft.volumeM3),
       stopRange,
       isEmpty,
+      reservedForReturnables,
       warnings: draft.warnings,
     })
   }
@@ -552,6 +593,45 @@ function positionLabel(row: number, truckSlots: number) {
 
 function stopRangeLabel(stopRange: readonly [number, number]) {
   return stopRange[0] === stopRange[1] ? `Stop ${stopRange[0]}` : `Stops ${stopRange[0]}-${stopRange[1]}`
+}
+
+function materialBreakdownForRow(row: MasterLoadRow): readonly MaterialBreakdownItem[] {
+  const breakdown = row.materialBreakdown?.filter((item) => item.material) ?? []
+  if (breakdown.length > 0) {
+    return breakdown.map((item) => ({
+      material: item.material,
+      quantity: roundTwo(item.quantity),
+    }))
+  }
+
+  return row.material
+    ? [{
+        material: row.material,
+        quantity: roundTwo(row.quantity),
+      }]
+    : []
+}
+
+function mergeMaterialBreakdown(
+  current: readonly MaterialBreakdownItem[],
+  additions: readonly MaterialBreakdownItem[],
+): readonly MaterialBreakdownItem[] {
+  const totals = new Map<string, number>()
+  for (const item of [...current, ...additions]) {
+    totals.set(item.material, roundTwo((totals.get(item.material) ?? 0) + item.quantity))
+  }
+  return [...totals.entries()].map(([material, quantity]) => ({ material, quantity }))
+}
+
+function scaleMaterialBreakdown(
+  breakdown: readonly MaterialBreakdownItem[],
+  ratio: number,
+): readonly MaterialBreakdownItem[] {
+  const safeRatio = Number.isFinite(ratio) ? Math.max(0, ratio) : 0
+  return breakdown.map((item) => ({
+    material: item.material,
+    quantity: roundTwo(item.quantity * safeRatio),
+  }))
 }
 
 function addUnique(values: readonly string[], value: string) {
