@@ -24,6 +24,7 @@ export {
   volumTotalLiniesEnCaixes,
 } from './escalaLiniesCapacitatCamio'
 export { compararFragmentPerBasePrimer, densitatKgPerCaixaEq } from './densitatFragment'
+export { construirMapaRanuraBarrilFragIdx } from './mapaBarrilsVisualPalet'
 export type { RepartimentRetornCaixesBarrils } from './retornablesPostEntrega'
 export {
   afegirRetornablesAlPla,

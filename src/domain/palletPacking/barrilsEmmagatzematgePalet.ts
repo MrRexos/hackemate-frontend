@@ -73,7 +73,15 @@ export function afegirCaixesDistribuïdes(pisos: PisEmmagatzematge[], quantitat:
  * Vertical: +2 caixes eq. de volum al pis baix i +2 al dalt (4 al camió per barril).
  * Tombat (només si no hi ha parella): +2 al pis superior (6 tombats caben en el tall de 12).
  */
-export function intentarReservarUnBarril(pisos: PisEmmagatzematge[]): boolean {
+export type ReservaBarrilDetall =
+  | { ok: true; pisBaix: number; ranura: number; esVertical: boolean }
+  | { ok: false }
+
+/**
+ * Mateixa lògica que `intentarReservarUnBarril`, però retorna pis i ranura (0..5)
+ * on s’ha col·locat el barril (per alineació amb la UI 2×3).
+ */
+export function intentarReservarUnBarrilAmbDetall(pisos: PisEmmagatzematge[]): ReservaBarrilDetall {
   for (let baix = 0; baix < ULTIM_PIS; baix++) {
     const p0 = pisos[baix]!
     const p1 = pisos[baix + 1]!
@@ -83,20 +91,27 @@ export function intentarReservarUnBarril(pisos: PisEmmagatzematge[]): boolean {
       espaiLliureBrut(p0) >= 2 &&
       espaiLliureBrut(p1) >= 2
     ) {
+      const ranura = p0.barrilsQueTocquen
       p0.barrilsQueTocquen++
       p1.barrilsQueTocquen++
       p0.volumBarrilsCaixesEq += 2
       p1.volumBarrilsCaixesEq += 2
-      return true
+      return { ok: true, pisBaix: baix, ranura, esVertical: true }
     }
   }
   const pt = pisos[ULTIM_PIS]!
   if (pt.barrilsQueTocquen < BARRILS_MAX_PER_PIS && espaiLliureBrut(pt) >= 2) {
+    const ranura = pt.barrilsQueTocquen
     pt.barrilsQueTocquen++
     pt.volumBarrilsCaixesEq += 2
-    return true
+    return { ok: true, pisBaix: ULTIM_PIS, ranura, esVertical: false }
   }
-  return false
+  return { ok: false }
+}
+
+export function intentarReservarUnBarril(pisos: PisEmmagatzematge[]): boolean {
+  const r = intentarReservarUnBarrilAmbDetall(pisos)
+  return r.ok
 }
 
 export function reservarFinsNBarrils(pisos: PisEmmagatzematge[], n: number): number {

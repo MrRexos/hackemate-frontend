@@ -53,7 +53,7 @@ export function indicesPaletsOmplimentDesDeCabina(nPalets: number): number[] {
  * - Dins cada palet, fragments ordenats per densitat (kg/caixa): més dens a la base de la pila.
  * - **Barrils primer**: 6 ranures màx. per pis; vertical 2+2 caixes eq. al tall de dos pisos; tombat +2 al pis 5.
  *   Volum total camió: 4 caixes eq. per barril.
- * - **Caixes / llaunes**: només el volum que sobra per pis (≤12 caixes eq./pis totals), amb forat d’alineació.
+ * - **Caixes i llaunes** (1 unitat de comanda en `LLAUNA` = 1 caixa eq., paquet de 24): volum que sobra per pis (≤12 caixes eq./pis totals), amb forat d’alineació.
  */
 export function planificarCarregaPalets(
   parades: readonly ParadaRuta[],

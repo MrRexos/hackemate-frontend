@@ -22,6 +22,9 @@ type ExcelEntrega = {
   volumTotal: number
   horaInici: string | null
   horaFinal: string | null
+  /** Hora aproximada d’arribada (backend / planificador); prioritat sobre `horaInici`. */
+  arribadaHoraAproximada?: string | null
+  sortidaHoraAproximada?: string | null
   pedidos: ExcelPedido[]
 }
 
@@ -127,13 +130,64 @@ function nomEntrega(e: ExcelEntrega): string {
   return e.identificador
 }
 
+function idEntregaBase(e: ExcelEntrega): string {
+  // El backend a vegades afegeix un sufix aleatori a `identificador` (ex: __adg72om8).
+  // Ens quedem amb "dia__nom" per detectar duplicats de la mateixa empresa.
+  const parts = e.identificador.split('__').map((p) => p.trim()).filter(Boolean)
+  if (parts.length >= 2) return `${parts[0]}__${parts[1]}`
+  return e.identificador.trim()
+}
+
+function horaArribadaDesEntrega(e: ExcelEntrega): string {
+  const a = e.arribadaHoraAproximada?.trim()
+  if (a) return a
+  const hi = e.horaInici?.trim()
+  if (hi) return hi
+  const hf = e.horaFinal?.trim()
+  if (hf) return hf
+  return '—'
+}
+
+function isMateixaUbicacio(a: ExcelCoord, b: ExcelCoord): boolean {
+  const eps = 1e-6
+  return Math.abs(a.x - b.x) <= eps && Math.abs(a.y - b.y) <= eps
+}
+
+function compactarEntreguesConsecutives(entregues: ExcelEntrega[]): ExcelEntrega[] {
+  if (entregues.length <= 1) return entregues
+  const out: ExcelEntrega[] = []
+  for (const e of entregues) {
+    const prev = out[out.length - 1]
+    if (
+      prev &&
+      idEntregaBase(prev) === idEntregaBase(e) &&
+      nomEntrega(prev).trim().toUpperCase() === nomEntrega(e).trim().toUpperCase() &&
+      isMateixaUbicacio(prev.coordenades, e.coordenades)
+    ) {
+      // Merge sense reordenar la ruta: només compactem si són consecutives.
+      prev.pedidos = [...prev.pedidos, ...e.pedidos]
+      prev.volumTotal = Number(prev.volumTotal) + Number(e.volumTotal || 0)
+      // Manté la primera hora aproximada si ja existeix; sinó, agafa la nova.
+      if (!prev.arribadaHoraAproximada && e.arribadaHoraAproximada) {
+        prev.arribadaHoraAproximada = e.arribadaHoraAproximada
+      }
+      if (!prev.sortidaHoraAproximada && e.sortidaHoraAproximada) {
+        prev.sortidaHoraAproximada = e.sortidaHoraAproximada
+      }
+      continue
+    }
+    out.push({ ...e, pedidos: [...e.pedidos] })
+  }
+  return out
+}
+
 function entregaAParada(e: ExcelEntrega): ParadaRuta {
   return {
     nom: nomEntrega(e),
     lat: e.coordenades.y,
     lng: e.coordenades.x,
-    horaArribadaAprox: e.horaInici?.trim() ? e.horaInici : '—',
-    clienteId: e.identificador,
+    horaArribadaAprox: horaArribadaDesEntrega(e),
+    clienteId: idEntregaBase(e),
   }
 }
 
@@ -160,7 +214,7 @@ function liniesDesEntregues(rutaId: string, entregues: ExcelEntrega[]): LiniaDis
         quantitat,
         unitat,
         pesKgPerUnitat: pesKgPerUnitatDefecte(unitat),
-        clienteId: entrega.identificador,
+        clienteId: idEntregaBase(entrega),
         empresaNom: empresa,
       })
     })
@@ -172,6 +226,8 @@ function liniesDesEntregues(rutaId: string, entregues: ExcelEntrega[]): LiniaDis
 export type ResultatCarregaExcelRutes = {
   rutes: Ruta[]
   liniesPerRutaId: Record<string, LiniaDistribucio[]>
+  /** `camio.id` del JSON Excel per assignar la ruta al camió correcte (si coincideix amb `Camio.codi` o àlies). */
+  codiCamioExcelPerRutaId: Record<string, string>
 }
 
 /**
@@ -179,22 +235,26 @@ export type ResultatCarregaExcelRutes = {
  */
 export function carregarRutesILiniesDesExcel(doc: ExcelRutesDocument): ResultatCarregaExcelRutes {
   const liniesPerRutaId: Record<string, LiniaDistribucio[]> = {}
+  const codiCamioExcelPerRutaId: Record<string, string> = {}
   const rutes: Ruta[] = []
 
   doc.rutes.forEach((bloc, i) => {
     const rutaId = `excel-ruta-${String(i + 1).padStart(2, '0')}`
     const tipus = tipusCamioDesCapacitatExcel(bloc.camio.capacitatMaxima)
+    const codiExcel = String(bloc.camio?.id ?? '').trim()
+    codiCamioExcelPerRutaId[rutaId] = codiExcel
     const [sortida, tornada] = paradesMagatzem(
       doc.magatzem,
       bloc.horaSortidaMagatzem,
       bloc.horaTornadaMagatzem,
     )
-    const intermedies = bloc.entregues.map(entregaAParada)
+    const entreguesCompactes = compactarEntreguesConsecutives(bloc.entregues)
+    const intermedies = entreguesCompactes.map(entregaAParada)
     const parades: ParadaRuta[] = [sortida, ...intermedies, tornada]
 
     rutes.push(new Ruta(rutaId, parades, tipus, null, null))
-    liniesPerRutaId[rutaId] = liniesDesEntregues(rutaId, bloc.entregues)
+    liniesPerRutaId[rutaId] = liniesDesEntregues(rutaId, entreguesCompactes)
   })
 
-  return { rutes, liniesPerRutaId }
+  return { rutes, liniesPerRutaId, codiCamioExcelPerRutaId }
 }

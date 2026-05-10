@@ -3,6 +3,11 @@ import { TipusCamio as TipusCamioConst } from '@/models/Camio'
 
 import { CAIXES_PER_BARRIL, CAIXES_PER_PALLET } from './constants'
 import { compararFragmentPerBasePrimer } from './densitatFragment'
+import {
+  afegirCaixesDistribuïdes,
+  pisosBuides,
+  reservarFinsNBarrils,
+} from './barrilsEmmagatzematgePalet'
 import type { FragmentPalet, LiniaDistribucio, PlaCarrega } from './types'
 import { quantitatFisicaDesDeVolumCaixes, volumEnCaixes } from './volum'
 
@@ -65,12 +70,26 @@ export function treureMercaderiaParadaDelPla(pla: PlaCarrega, paradaIndex: numbe
   const palets = pla.palets.map((p) => {
     const fragments = p.fragments.filter((f) => !(f.paradaIndex === paradaIndex && !f.esRetornable))
     const ocupatCaixes = fragments.reduce((s, f) => s + f.volumCaixes, 0)
-    return { ...p, fragments, ocupatCaixes }
+    return { ...p, fragments, ocupatCaixes, planPisos: recomputarPlanPisosDesDeFragments(fragments) }
   })
   return { ...pla, palets }
 }
 
 let retornSeq = 0
+
+function recomputarPlanPisosDesDeFragments(fragments: readonly FragmentPalet[]) {
+  const pisos = pisosBuides()
+  for (const frag of fragments) {
+    if (frag.volumCaixes <= EPS) continue
+    if (frag.unitat === 'BARRIL') {
+      const nb = Math.max(0, Math.floor((frag.volumCaixes + EPS) / CAIXES_PER_BARRIL))
+      if (nb > 0) reservarFinsNBarrils(pisos, nb)
+      continue
+    }
+    afegirCaixesDistribuïdes(pisos, frag.volumCaixes)
+  }
+  return pisos.map((x) => ({ ...x }))
+}
 
 function fragmentRetornCaixes(paradaIndex: number, paradaNom: string, nCaixes: number): FragmentPalet {
   retornSeq += 1
@@ -185,6 +204,10 @@ export function afegirRetornablesAlPla(
 
   const restVol = remainingBarrils * CAIXES_PER_BARRIL + remainingCaixes
   if (restVol > EPS) desbord += restVol
+
+  for (const palet of palets) {
+    palet.planPisos = recomputarPlanPisosDesDeFragments(palet.fragments)
+  }
 
   return {
     palets,

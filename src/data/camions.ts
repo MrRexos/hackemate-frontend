@@ -1,12 +1,6 @@
-import excelRutesDoc from './excel-rutes.json'
-
 import { Camio, TipusCamio } from '../models/Camio'
-import { assignarRutesACamions } from '../services/assignacioRutes'
-import {
-  carregarRutesILiniesDesExcel,
-  type ExcelRutesDocument,
-} from '../services/excelRutesFleet'
-import { setExcelRutesLiniesPerRuta } from './excelRutesLiniesRegistry'
+import { FLEET_EXCEL_CAMIO_ALIASES } from './fleetExcelCamioAliases'
+import { getInternalCamioCodeFromExcel } from './camioLookupRegistry'
 
 export const camions: Camio[] = [
   new Camio('A1B2C3D', TipusCamio.Mitja),
@@ -29,18 +23,46 @@ export const camions: Camio[] = [
   new Camio('Z3C7V1B', TipusCamio.Petit),
 ]
 
-const { rutes: rutesExcel, liniesPerRutaId } = carregarRutesILiniesDesExcel(
-  excelRutesDoc as unknown as ExcelRutesDocument,
-)
-setExcelRutesLiniesPerRuta(liniesPerRutaId)
-assignarRutesACamions(camions, rutesExcel)
+/** Les rutes s’assignen a l’arranc via `inicialitzarFlotaDesExcel` a `main.tsx`. */
 
 export function getCamions(): Camio[] {
   return camions;
 }
 
+function normalitzaCodiCamio(s: string): string {
+  return s.trim().toUpperCase()
+}
+
+function mapaAliasesDesEnv(): Map<string, string> {
+  const raw = import.meta.env.VITE_FLEET_CAMIO_ALIASES?.trim()
+  const m = new Map<string, string>()
+  if (!raw) return m
+  for (const part of raw.split(',')) {
+    const [excel, intern] = part.split('=').map((x: string) => x.trim().toUpperCase())
+    if (excel && intern) m.set(excel, intern)
+  }
+  return m
+}
+
+function resoldreCodiCamioEntrada(codiEntrada: string): string {
+  const c = normalitzaCodiCamio(codiEntrada)
+  if (!c) return ''
+
+  const aliasEnv = mapaAliasesDesEnv().get(c)
+  if (aliasEnv) return aliasEnv
+
+  const aliasFitxer = FLEET_EXCEL_CAMIO_ALIASES[c]
+  if (aliasFitxer) return normalitzaCodiCamio(aliasFitxer)
+
+  const desAssignacioActual = getInternalCamioCodeFromExcel(c)
+  if (desAssignacioActual) return normalitzaCodiCamio(desAssignacioActual)
+
+  return c
+}
+
 export function getCamioPerCodi(codi: string): Camio | undefined {
-  return camions.find((camio) => camio.codi === codi);
+  const resolt = resoldreCodiCamioEntrada(codi)
+  return camions.find((camio) => normalitzaCodiCamio(camio.codi) === resolt)
 }
 
 export function setDisponibilitatCamio(codi: string, disponible: boolean): boolean {

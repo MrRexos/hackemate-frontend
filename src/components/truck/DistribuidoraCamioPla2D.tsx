@@ -3,16 +3,12 @@ import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } fr
 
 import truckImg from '@/assets/img/truck_top.png'
 import { buttonCn } from '@/components/ui/Button'
-import { cn } from '@/utils/cn'
 import {
-  BARRILS_MAX_PER_PIS,
   CAIXES_PER_PALLET,
-  FORAT_ALINEACIO_CAIXES,
-  VOLUM_CAIXES_EQ_MAX_PER_PIS,
-  densitatKgPerCaixaEq,
+  compararFragmentPerBasePrimer,
   paletsMaximsPerTipus,
 } from '@/domain/palletPacking'
-import type { FragmentPalet, PaletOmplert, PisPlaEmmagatzematge, PlaCarrega } from '@/domain/palletPacking'
+import type { FragmentPalet, PaletOmplert, PlaCarrega } from '@/domain/palletPacking'
 import type { TipusCamio } from '@/models/Camio'
 
 /* ─── Types ──────────────────────────────────────────────────────────────── */
@@ -31,6 +27,8 @@ type Props = {
   senseLlegenda?: boolean
   /** Parades ja descarregades: els fragments es treuen de la vista sense recalcular el pla (la pila es compacta sola). */
   paradesCompletades?: ReadonlySet<number>
+  /** Parades arribades però cancel·lades (no entregades). */
+  paradesCancelades?: ReadonlySet<number>
 }
 
 export function graellaPalets(nPalets: number): { cols: number; rows: number } {
@@ -58,12 +56,26 @@ function paletPerOrdre(pla: PlaCarrega, nPalets: number, ordre: number): PaletOm
   return pla.palets.find((p) => nPalets - p.index === ordre) ?? pla.palets[ordre - 1]
 }
 
-/**
- * Vista de la pila (dalt del tot → terra): invers de l’ordre d’emmagatzematge
- * (fragment[0] = base del palet amb barrils/densitat ja ordenats).
- */
-function fragmentsPerVistaPilaDesDeDalt(frags: FragmentPalet[]): FragmentPalet[] {
-  return [...frags].reverse()
+type SegmentMiniaturaPalet = {
+  cat: CatCarrega
+  volum: number
+}
+
+const EPS_PIS = 1e-6
+
+function segmentsMiniaturaPerCategoria(frags: readonly FragmentPalet[]): SegmentMiniaturaPalet[] {
+  const ordreCats: CatCarrega[] = ['retornable', 'barril', 'caja', 'lata', 'otros']
+  const acum = new Map<CatCarrega, number>()
+  for (const f of frags) {
+    const c = catCarrega(f)
+    acum.set(c, (acum.get(c) ?? 0) + Math.max(0, f.volumCaixes))
+  }
+  const out = ordreCats
+    .map((cat) => ({ cat, volum: acum.get(cat) ?? 0 }))
+    .filter((x) => x.volum > EPS_PIS)
+  const total = out.reduce((s, x) => s + x.volum, 0)
+  if (total <= EPS_PIS) return []
+  return out
 }
 
 /** Nom de producte llegible (mai mostrar `material_id` com si fos nom). */
@@ -89,6 +101,58 @@ function clientEntrega(f: FragmentPalet): string {
   return (f.empresaNom ?? f.paradaNom ?? '').trim() || '—'
 }
 
+/** Mateix producte + mateixa empresa (sense parada): per ajuntar línies del mateix palet. */
+function clauMergeMateixProducteEmpresa(f: FragmentPalet): string {
+  const emp =
+    (f.empresaNom ?? '').trim().toLowerCase() ||
+    (f.paradaNom ?? '').trim().toLowerCase()
+  const cli = (f.clienteId ?? '').trim()
+  const u = f.unitat ?? 'CAIXA'
+  const ret = f.esRetornable === true ? '1' : '0'
+  return `${f.producteId}\x1e${u}\x1e${ret}\x1e${cli}\x1e${emp}`
+}
+
+type GrupOrdreCarregaPalet = {
+  clau: string
+  representant: FragmentPalet
+  quantitatTotal: number
+  fragments: FragmentPalet[]
+  minOrdreIdx: number
+}
+
+function agrupaOrdreCarregaMateixProducteEmpresa(
+  ordreDesDeBase: readonly FragmentPalet[],
+): GrupOrdreCarregaPalet[] {
+  const ordreClaus: string[] = []
+  const mapa = new Map<string, { frags: FragmentPalet[]; minIdx: number }>()
+  for (let i = 0; i < ordreDesDeBase.length; i++) {
+    const f = ordreDesDeBase[i]!
+    const clau = clauMergeMateixProducteEmpresa(f)
+    let bucket = mapa.get(clau)
+    if (!bucket) {
+      bucket = { frags: [], minIdx: i }
+      mapa.set(clau, bucket)
+      ordreClaus.push(clau)
+    }
+    bucket.frags.push(f)
+    bucket.minIdx = Math.min(bucket.minIdx, i)
+  }
+  return ordreClaus
+    .map((clau) => {
+      const b = mapa.get(clau)!
+      const representant = b.frags[0]!
+      const quantitatTotal = b.frags.reduce((s, x) => s + x.quantitatUnitatComanda, 0)
+      return {
+        clau,
+        representant,
+        quantitatTotal,
+        fragments: b.frags,
+        minOrdreIdx: b.minIdx,
+      }
+    })
+    .sort((a, b) => a.minOrdreIdx - b.minOrdreIdx)
+}
+
 /* ─── Categoria de càrrega ───────────────────────────────────────────────── */
 
 export type CatCarrega = 'caja' | 'barril' | 'lata' | 'retornable' | 'otros'
@@ -111,329 +175,11 @@ const CAT_COLOR: Record<CatCarrega, string> = {
   otros:      '#B09CD8',
 }
 const CAT_LABEL: Record<CatCarrega, string> = {
-  caja: 'Caja', barril: 'Barril', lata: 'Lata', retornable: 'Retornable', otros: 'Otros',
-}
-
-/**
- * Model 3D del palet: 3 d’amplada × 4 de fondària × 5 pisos = 60 cel·les (= capacitat d’1 palet).
- * Cada cel·la = 1 caixa equivalent (un barril = 4 cel·les, com a `volumCaixes` del fragment).
- */
-const PALLET3D_AMPLADA = 3
-const PALLET3D_FONDARIA = 4
-const PALLET3D_PISOS = 5
-const MOSAIC_CELLS = PALLET3D_AMPLADA * PALLET3D_FONDARIA * PALLET3D_PISOS
-const CELLES_PER_PIS = PALLET3D_AMPLADA * PALLET3D_FONDARIA
-
-/** Vista per pis amb barrils: 2 columnes × 3 files = 6 ranures (1 barril vertical o fins 2 caixes eq. per ranura buida). */
-const BARRIL_VISTA_COLS = 2
-const BARRIL_VISTA_FILES = 3
-const BARRIL_VISTA_SLOTS = BARRIL_VISTA_COLS * BARRIL_VISTA_FILES
-/** Màx. caixes eq. per ranura quan només hi ha caixes (12 totals / 6). */
-const CAIXES_EQ_MAX_PER_RANURA_SENSE_BARRIL = VOLUM_CAIXES_EQ_MAX_PER_PIS / BARRIL_VISTA_SLOTS
-
-const EPS_PIS = 1e-6
-
-/** Si el palet té barrils en qualsevol pis, la representació per pisos és sempre 2×3 (6), mai 3×4 (12). */
-function paletConteAlgunBarril(planPisos: readonly PisPlaEmmagatzematge[]): boolean {
-  return planPisos.some(
-    (p) => p.barrilsQueTocquen > EPS_PIS || p.volumBarrilsCaixesEq > EPS_PIS,
-  )
-}
-
-function barrilsTocquenPis(planPisos: readonly PisPlaEmmagatzematge[] | undefined, pis: number): number {
-  return Math.min(BARRILS_MAX_PER_PIS, Math.max(0, planPisos?.[pis]?.barrilsQueTocquen ?? 0))
-}
-
-/**
- * Per cada ranura 0..5 (fila major: dalt→baix, esquerra→dreta): si aquest pis «toca» barril en aquesta columna.
- * Es fa servir el mateix ordre de ranures entre pisos per modelar continuació vertical (barril de 2 pisos).
- */
-function mascaraBarrilsPis(planPisos: readonly PisPlaEmmagatzematge[], pisDesDeBase: number): boolean[] {
-  const b = barrilsTocquenPis(planPisos, pisDesDeBase)
-  return Array.from({ length: BARRIL_VISTA_SLOTS }, (_, i) => i < b)
-}
-
-function distribuirCaixesEnRanuresLliures(
-  ocupacioCaixes: number,
-  ranuraTeBarril: boolean[],
-  maxPerRanura = CAIXES_EQ_MAX_PER_RANURA_SENSE_BARRIL,
-): number[] {
-  const out = Array.from({ length: BARRIL_VISTA_SLOTS }, () => 0)
-  const lliures = ranuraTeBarril.map((ocupada, i) => (!ocupada ? i : -1)).filter((i) => i >= 0)
-  let queda = Math.max(0, ocupacioCaixes)
-  for (const i of lliures) {
-    if (queda <= EPS_PIS) break
-    const add = Math.min(maxPerRanura, queda)
-    out[i]! += add
-    queda -= add
-  }
-  return out
-}
-
-type RanuraPisVisual = {
-  teBarrilRanura: boolean
-  contCap: boolean
-  baseNova: boolean
-  caixesAquí: number
-}
-
-/** Estat de les 6 ranures (2×3) per a un pis concret; mateixa convenció entre modal i miniatura. */
-function ranuresVisualsPerPis(
-  planPisos: readonly PisPlaEmmagatzematge[],
-  pisDesDeBase: number,
-): RanuraPisVisual[] {
-  const pla = planPisos[pisDesDeBase]!
-  const bCur = barrilsTocquenPis(planPisos, pisDesDeBase)
-  const bPrev = pisDesDeBase > 0 ? barrilsTocquenPis(planPisos, pisDesDeBase - 1) : 0
-  const teBarrilPis = bCur > 0 || pla.volumBarrilsCaixesEq > EPS_PIS
-  const ranuraTeBarril = teBarrilPis
-    ? mascaraBarrilsPis(planPisos, pisDesDeBase)
-    : Array.from({ length: BARRIL_VISTA_SLOTS }, () => false)
-  const caixesPerRanura = distribuirCaixesEnRanuresLliures(pla.ocupacioCaixes, ranuraTeBarril)
-
-  return Array.from({ length: BARRIL_VISTA_SLOTS }, (_, i) => {
-    const teBarrilRanura = ranuraTeBarril[i]!
-    const contCap = i < bCur && i < bPrev && pisDesDeBase > 0
-    const baseNova = teBarrilRanura && (pisDesDeBase === 0 || i >= bPrev)
-    const caixesAquí = teBarrilRanura ? 0 : caixesPerRanura[i]!
-    return { teBarrilRanura, contCap, baseNova, caixesAquí }
-  })
-}
-
-/**
- * Nombre de cel·les per fragment = volum en caixes eq. (arrodonit). Un barril amb `volumCaixes` 4 → 4 cel·les.
- * Si l’arrodoniment supera la capacitat del palet, s’escala proporcionalment (cas desbordament).
- */
-function celulesPerFragmentFidelAlVolum(volums: readonly number[], capacitatMax: number): number[] {
-  const n = volums.length
-  if (n === 0 || capacitatMax <= 0) return []
-
-  const rounded = volums.map((v) => {
-    const x = Math.max(0, Number(v))
-    return Number.isFinite(x) ? Math.round(x) : 0
-  })
-  const sumArr = rounded.reduce((a, b) => a + b, 0)
-  if (sumArr <= capacitatMax) return rounded
-
-  const sumRaw =
-    volums.reduce((a, b) => a + (Number.isFinite(Number(b)) && Number(b) > 0 ? Number(b) : 0), 0) || 1
-  const ideal = volums.map((v) => {
-    const x = Number.isFinite(Number(v)) && Number(v) > 0 ? Number(v) : 0
-    return (x / sumRaw) * capacitatMax
-  })
-  const fl = ideal.map((x) => Math.floor(x))
-  const cells = [...fl]
-  let deficit = capacitatMax - cells.reduce((a, b) => a + b, 0)
-  const byRem = ideal.map((x, i) => ({ i, rem: x - fl[i]! })).sort((a, b) => b.rem - a.rem)
-  for (let k = 0; k < deficit; k++) cells[byRem[k % byRem.length]!.i]!++
-
-  for (let i = 0; i < n; i++) {
-    if (volums[i]! > 0 && cells[i] === 0) {
-      const donor = cells.indexOf(Math.max(...cells))
-      if (donor >= 0 && cells[donor]! > 1) {
-        cells[donor]!--
-        cells[i]!++
-      }
-    }
-  }
-  return cells
-}
-
-/**
- * Omple el palet en 3D: pis 0 = base (primer omplert); dins de cada pis, files 0→3, columnes 0→2.
- * Retorna `pisosDesDeBase[pis][fila][col]` → índex de fragment o null.
- */
-function construirPalet3DPisos(
-  frags: readonly FragmentPalet[],
-  counts: readonly number[],
-): (number | null)[][][] {
-  const seq: number[] = []
-  for (let fi = 0; fi < frags.length; fi++) {
-    const c = counts[fi] ?? 0
-    for (let j = 0; j < c; j++) seq.push(fi)
-  }
-
-  const pisos: (number | null)[][][] = Array.from({ length: PALLET3D_PISOS }, () =>
-    Array.from({ length: PALLET3D_FONDARIA }, () => Array(PALLET3D_AMPLADA).fill(null)),
-  )
-
-  for (let k = 0; k < seq.length; k++) {
-    const pis = Math.floor(k / CELLES_PER_PIS)
-    if (pis >= PALLET3D_PISOS) break
-    const dins = k % CELLES_PER_PIS
-    const fila = Math.floor(dins / PALLET3D_AMPLADA)
-    const col = dins % PALLET3D_AMPLADA
-    pisos[pis]![fila]![col] = seq[k]!
-  }
-  return pisos
-}
-
-/* ─── Vista 2×3 pis amb barrils (modal) ───────────────────────────────────── */
-
-function SubquadratsCaixesRanura({
-  caixesAquí,
-  colorCaixa,
-}: {
-  caixesAquí: number
-  colorCaixa: string
-}) {
-  const ple1 = caixesAquí >= 1 - EPS_PIS
-  const ple2 = caixesAquí >= 2 - EPS_PIS
-  return (
-    <div className="flex h-full w-full flex-col gap-px px-[8%] py-[8%]">
-      <div
-        className="flex min-h-0 flex-1 flex-col gap-px overflow-hidden rounded-[3px] border border-black/20"
-        title="Quadrat subdividit: fins a 2 caixes eq. (1 a cada meitat)"
-      >
-        <div
-          className="min-h-0 flex-1 rounded-t-[2px] border-b border-black/15"
-          style={{
-            background: ple1 ? colorCaixa : '#D4C4A8',
-            opacity: ple1 ? 0.92 : 0.35,
-          }}
-        />
-        <div
-          className="min-h-0 flex-1 rounded-b-[2px]"
-          style={{
-            background: ple2 ? colorCaixa : '#D4C4A8',
-            opacity: ple2 ? 0.92 : 0.35,
-          }}
-        />
-      </div>
-    </div>
-  )
-}
-
-function GraellaPisBarrilsICaixes({
-  planPisos,
-  pisDesDeBase,
-  paletIndex,
-  colorBarril,
-  colorCaixa,
-}: {
-  planPisos: readonly PisPlaEmmagatzematge[]
-  pisDesDeBase: number
-  paletIndex: number
-  colorBarril: string
-  colorCaixa: string
-}) {
-  const pla = planPisos[pisDesDeBase]!
-  const bCur = barrilsTocquenPis(planPisos, pisDesDeBase)
-  const algunBarrilAlPalet = paletConteAlgunBarril(planPisos)
-  const teBarrilPis = bCur > 0 || pla.volumBarrilsCaixesEq > EPS_PIS
-  const ranures = ranuresVisualsPerPis(planPisos, pisDesDeBase)
-
-  if (!algunBarrilAlPalet && !teBarrilPis) {
-    const nCaixesVisual = Math.min(
-      CELLES_PER_PIS,
-      Math.max(0, Math.round(pla.ocupacioCaixes)),
-    )
-    return (
-      <div className="w-full max-w-[220px] space-y-2">
-        <p className="text-center text-[0.58rem] font-semibold uppercase tracking-wide text-slate-600">
-          Només caixes / llaunes (3×4)
-        </p>
-        <div
-          className="grid aspect-[3/4] w-full gap-0.5 rounded border border-[#7A4820]/40 bg-[#E8DCC4] p-1 shadow-inner"
-          style={{
-            gridTemplateColumns: `repeat(${PALLET3D_AMPLADA}, minmax(0, 1fr))`,
-            gridTemplateRows: `repeat(${PALLET3D_FONDARIA}, minmax(0, 1fr))`,
-          }}
-        >
-          {Array.from({ length: CELLES_PER_PIS }, (_, k) => {
-            const ple = k < nCaixesVisual
-            return (
-              <div
-                aria-hidden
-                className="min-h-0 min-w-0 rounded-[2px] border border-black/10"
-                key={`cx-${paletIndex}-p${pisDesDeBase}-${k}`}
-                style={{
-                  background: ple ? colorCaixa : '#D4C4A8',
-                  opacity: ple ? 0.88 : 0.45,
-                }}
-              />
-            )
-          })}
-        </div>
-        <p className="text-center text-[0.58rem] text-slate-600">
-          Caixes assignades al pis (aprox.): {pla.ocupacioCaixes.toFixed(1)} caixes eq.
-        </p>
-      </div>
-    )
-  }
-
-  return (
-    <div className="w-full max-w-[220px] space-y-2">
-      <p className="text-center text-[0.58rem] font-semibold uppercase tracking-wide text-slate-600">
-        Pis 2×3 (6 quadrats): 1 barril per quadrat (mateixa posició al pis de dalt si és vertical); ranura de caixes
-        partida en 2 (fins 2 caixes eq.). Pis 5: barril tombat sense pis 6, mateixa graella.
-      </p>
-      <div
-        className="grid w-full gap-1 rounded border border-[#7A4820]/40 bg-[#E8DCC4] p-1.5 shadow-inner"
-        style={{
-          gridTemplateColumns: `repeat(${BARRIL_VISTA_COLS}, minmax(0, 1fr))`,
-          gridTemplateRows: `repeat(${BARRIL_VISTA_FILES}, minmax(0, 1fr))`,
-          aspectRatio: `${BARRIL_VISTA_COLS} / ${BARRIL_VISTA_FILES}`,
-        }}
-      >
-        {ranures.map((rv, i) => {
-          const { teBarrilRanura, contCap, baseNova, caixesAquí } = rv
-          const pleCaixes = caixesAquí > EPS_PIS
-
-          let aria = `Ranura ${i + 1} buida (2 meitats per caixes)`
-          if (teBarrilRanura) {
-            if (contCap) aria = `Ranura ${i + 1}: barril (continuació des del pis inferior)`
-            else if (baseNova) aria = `Ranura ${i + 1}: base de barril`
-            else aria = `Ranura ${i + 1}: barril`
-          } else if (pleCaixes) {
-            aria = `Ranura ${i + 1}: caixes (~${caixesAquí.toFixed(1)} caixes eq. en 2 meitats)`
-          }
-
-          return (
-            <div
-              aria-label={aria}
-              className="relative flex min-h-[2.25rem] min-w-0 flex-col items-center justify-center rounded-md border border-black/15"
-              key={`br2-${paletIndex}-p${pisDesDeBase}-s${i}`}
-              style={{
-                background: teBarrilRanura ? colorBarril : '#D4C4A8',
-                opacity: teBarrilRanura || pleCaixes ? 0.95 : 0.55,
-              }}
-            >
-              {teBarrilRanura ? (
-                <>
-                  {contCap ? (
-                    <span
-                      className="pointer-events-none absolute inset-x-[8%] top-0 h-[38%] rounded-t-full border border-white/30 bg-black/12"
-                      title="Part alta del barril (mateixa ranura i posició que el pis de sota)"
-                    />
-                  ) : null}
-                  <span
-                    className={`pointer-events-none relative z-[1] w-[58%] rounded-full border border-white/35 bg-black/10 ${
-                      contCap && !baseNova ? 'aspect-square max-h-[55%]' : 'aspect-square max-h-[72%]'
-                    }`}
-                  />
-                  {baseNova && pisDesDeBase < PALLET3D_PISOS - 1 ? (
-                    <span className="pointer-events-none absolute inset-x-[12%] bottom-0.5 text-[0.45rem] font-medium leading-none text-slate-800/90">
-                      2 pisos
-                    </span>
-                  ) : null}
-                </>
-              ) : (
-                <SubquadratsCaixesRanura caixesAquí={caixesAquí} colorCaixa={colorCaixa} />
-              )}
-            </div>
-          )
-        })}
-      </div>
-      <p className="text-center text-[0.58rem] tabular-nums text-slate-700">
-        Barrils que toquen aquest pis: {bCur} / {BARRILS_MAX_PER_PIS} · Volum barrils:{' '}
-        {pla.volumBarrilsCaixesEq.toFixed(1)} / {VOLUM_CAIXES_EQ_MAX_PER_PIS} caixes eq.
-      </p>
-      <p className="text-center text-[0.58rem] text-slate-600">
-        Caixes al pis (forat d’alineació aplicat al repartiment): {pla.ocupacioCaixes.toFixed(1)} caixes eq.
-      </p>
-    </div>
-  )
+  caja: 'Caixa',
+  barril: 'Barril',
+  lata: 'Llauna',
+  retornable: 'Retornable',
+  otros: 'Altres',
 }
 
 /* ─── Cel·la palet ───────────────────────────────────────────────────────── */
@@ -449,11 +195,13 @@ function CeldaPalet({
   palet: PaletOmplert
   ordreCabina: number
   actiu: boolean
-  onSelect: (p: PaletOmplert) => void
+  onSelect: (paletIndex: number) => void
   paradaEntregaIndex?: number
   paradesCompletades?: ReadonlySet<number>
 }) {
-  const encaraAlCamio = palet.fragments.filter((f) => !paradesCompletades?.has(f.paradaIndex))
+  const encaraAlCamio = palet.fragments.filter(
+    (f) => f.esRetornable === true || !paradesCompletades?.has(f.paradaIndex),
+  )
   const fragsMostrats =
     paradaEntregaIndex === undefined
       ? encaraAlCamio
@@ -461,8 +209,7 @@ function CeldaPalet({
   const filtreParada = paradaEntregaIndex !== undefined
   const senseMercaderiaAqui = filtreParada && fragsMostrats.length === 0
   const buit = fragsMostrats.length === 0
-  const fragsVistaPila = fragmentsPerVistaPilaDesDeDalt(fragsMostrats)
-  const vols = fragsVistaPila.map((f) => Math.max(0.05, f.volumCaixes / CAIXES_PER_PALLET))
+  const segsMini = segmentsMiniaturaPerCategoria(fragsMostrats)
 
   const destacatEntrega = filtreParada && fragsMostrats.length > 0
   const ringClass = senseMercaderiaAqui
@@ -473,19 +220,13 @@ function CeldaPalet({
         ? 'ring-[3px] ring-emerald-600 ring-offset-2'
         : 'hover:ring-2 hover:ring-slate-400/50'
 
-  const vistaPlaPisosAlCamio =
-    !buit &&
-    !filtreParada &&
-    palet.planPisos != null &&
-    palet.planPisos.length === PALLET3D_PISOS
-
   return (
     <button
       className={`group relative h-full w-full overflow-hidden rounded-md outline-none transition-all ${
         senseMercaderiaAqui ? 'cursor-not-allowed opacity-[0.28] pointer-events-none' : ''
       } ${ringClass}`}
       disabled={senseMercaderiaAqui}
-      onClick={() => onSelect(palet)}
+      onClick={() => onSelect(palet.index)}
       type="button"
     >
       {/* Fons fusta */}
@@ -506,98 +247,36 @@ function CeldaPalet({
       {/* Vora palet */}
       <div className="pointer-events-none absolute inset-0 rounded-md border-2 border-[#7A4820]/50" />
 
-      {/* Càrrega: pla per pis (2×3) si hi ha dades; si no, vista per fragments. */}
+      {/* Càrrega: miniatura simplificada per categoria, proporcional al volum real del palet. */}
       {!buit && (
-        <div className="pointer-events-none absolute inset-[8%] bottom-[10%] z-[2] flex flex-col justify-end">
-          {vistaPlaPisosAlCamio ? (
-            <div className="flex min-h-0 h-full w-full flex-col-reverse gap-[2px]">
-              {Array.from({ length: PALLET3D_PISOS }, (_, pisDesDeBase) => {
-                const ranures = ranuresVisualsPerPis(palet.planPisos!, pisDesDeBase)
-                return (
-                  <div
-                    className="grid min-h-[5px] flex-1 grid-cols-2 grid-rows-3 gap-px"
-                    key={`mic-p${palet.index}-${pisDesDeBase}`}
-                  >
-                    {ranures.map((rv, si) => {
-                      const cj = CAT_COLOR.caja
-                      const ple1 = !rv.teBarrilRanura && rv.caixesAquí >= 1 - EPS_PIS
-                      const ple2 = !rv.teBarrilRanura && rv.caixesAquí >= 2 - EPS_PIS
-                      return (
-                        <div
-                          className="relative min-h-0 min-w-0 overflow-hidden rounded-[1px] border border-black/10"
-                          key={`mic-${palet.index}-p${pisDesDeBase}-s${si}`}
-                          style={{
-                            background: rv.teBarrilRanura ? CAT_COLOR.barril : '#C4B498',
-                            opacity: rv.teBarrilRanura || ple1 || ple2 ? 0.92 : 0.45,
-                          }}
-                        >
-                          {rv.teBarrilRanura ? (
-                            <span className="absolute inset-[12%] rounded-full border border-white/25 bg-black/10" />
-                          ) : (
-                            <div className="absolute inset-[1px] flex flex-col gap-px">
-                              <div
-                                className="min-h-0 flex-1 rounded-t-[1px]"
-                                style={{
-                                  background: ple1 ? cj : 'transparent',
-                                  opacity: ple1 ? 0.95 : 0.25,
-                                }}
-                              />
-                              <div
-                                className="min-h-0 flex-1 rounded-b-[1px]"
-                                style={{
-                                  background: ple2 ? cj : 'transparent',
-                                  opacity: ple2 ? 0.95 : 0.25,
-                                }}
-                              />
-                            </div>
-                          )}
-                        </div>
-                      )
-                    })}
-                  </div>
-                )
-              })}
-            </div>
-          ) : (
-            <div className="flex min-h-0 h-full w-full flex-col gap-[2px]">
-              {fragsVistaPila.map((frag, j) => {
-                const cat = catCarrega(frag)
-                const color = CAT_COLOR[cat]
-                const d = densitatKgPerCaixaEq(frag)
-                return (
-                  <div
-                    key={`${frag.paradaIndex}-${frag.producteId}-${j}`}
-                    className="relative w-full min-h-[4px] overflow-hidden rounded-[3px]"
-                    style={{
-                      flexGrow: vols[j],
-                      flexShrink: 1,
-                      flexBasis: 0,
-                      background: color,
-                      opacity: 0.88,
-                    }}
-                    title={`${cat} · ~${d.toFixed(1)} kg/caixa eq.`}
-                  >
-                    {cat === 'barril' && (
-                      <div className="absolute inset-0 flex items-center justify-center">
-                        <div className="h-[72%] aspect-square rounded-full border border-white/35 bg-black/10" />
-                      </div>
-                    )}
-                  </div>
-                )
-              })}
-            </div>
-          )}
+        <div className="pointer-events-none absolute inset-[3%] bottom-[5%] z-[2] flex flex-col justify-end rounded-[2px] shadow-[inset_0_1px_4px_rgba(45,35,20,0.18)]">
+          <div className="flex min-h-0 h-full w-full flex-col gap-[4px]">
+            {segsMini.map((seg) => (
+              <div
+                key={`seg-${palet.index}-${seg.cat}`}
+                className="relative w-full min-h-[10px] overflow-hidden rounded-[4px] border border-black/12"
+                style={{
+                  flexGrow: Math.max(0.12, seg.volum / CAIXES_PER_PALLET),
+                  flexShrink: 1,
+                  flexBasis: 0,
+                  background: CAT_COLOR[seg.cat],
+                  opacity: 0.86,
+                }}
+                title={`${CAT_LABEL[seg.cat]} · ${seg.volum.toFixed(1)} caixes eq.`}
+              />
+            ))}
+          </div>
         </div>
       )}
 
       {/* Número */}
       <div className="pointer-events-none absolute inset-0 z-[3] flex items-center justify-center">
         <div
-          className="flex items-center justify-center rounded-full border-2 border-slate-300 bg-white/90 font-bold text-slate-900 shadow-md"
+          className="flex items-center justify-center rounded-full border-2 border-slate-400/90 bg-white/88 font-bold text-slate-900 shadow-md backdrop-blur-[1px]"
           style={{
-            width: 'clamp(1.4rem, 27%, 2rem)',
-            height: 'clamp(1.4rem, 27%, 2rem)',
-            fontSize: 'clamp(0.6rem, 2vw, 0.85rem)',
+            width: 'clamp(1.25rem, 22%, 1.75rem)',
+            height: 'clamp(1.25rem, 22%, 1.75rem)',
+            fontSize: 'clamp(0.55rem, 1.75vw, 0.78rem)',
           }}
         >
           {ordreCabina}
@@ -615,62 +294,69 @@ function ModalDetall({
   onTancar,
   paradaEntregaIndex,
   paradesCompletades,
+  paradesCancelades,
 }: {
   palet: PaletOmplert
   onTancar: () => void
   paradaEntregaIndex?: number
   paradesCompletades?: ReadonlySet<number>
+  paradesCancelades?: ReadonlySet<number>
 }) {
-  const [fragmentResaltatIndex, setFragmentResaltatIndex] = useState<number | null>(null)
-  const [pisTab, setPisTab] = useState(0)
-
   useEffect(() => {
-    const fn = (e: KeyboardEvent) => { if (e.key === 'Escape') onTancar() }
+    const fn = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') onTancar()
+    }
     window.addEventListener('keydown', fn)
     return () => window.removeEventListener('keydown', fn)
   }, [onTancar])
 
-  useEffect(() => {
-    setPisTab(0)
-    setFragmentResaltatIndex(null)
-  }, [palet.index])
+  const totsFrags = palet.fragments.filter(
+    (f) => f.esRetornable === true || !paradesCompletades?.has(f.paradaIndex),
+  )
+  const enContextRuta = paradaEntregaIndex !== undefined
+  const enContextRetornable =
+    paradaEntregaIndex !== undefined &&
+    totsFrags.some((f) => f.paradaIndex === paradaEntregaIndex && f.esRetornable === true)
 
-  const totsFrags = palet.fragments.filter((f) => !paradesCompletades?.has(f.paradaIndex))
+  /** Ordre cap a la base (terra primer): el mateix criteri que `compararFragmentPerBasePrimer`. */
+  const ordreDesDeBase = useMemo(
+    () => [...totsFrags].sort((a, b) => compararFragmentPerBasePrimer(a, b)),
+    [totsFrags, palet.index],
+  )
 
-  const tePlanPisos =
-    palet.planPisos != null && palet.planPisos.length === PALLET3D_PISOS
+  const grupsCarrega = useMemo(
+    () => agrupaOrdreCarregaMateixProducteEmpresa(ordreDesDeBase),
+    [ordreDesDeBase],
+  )
 
-  const graellaMosaicLegacy = useMemo(() => {
-    const frags = palet.fragments.filter((f) => !paradesCompletades?.has(f.paradaIndex))
-    if (frags.length === 0) return null
-    if (palet.planPisos != null && palet.planPisos.length === PALLET3D_PISOS) return null
-    const vols = frags.map((f) => f.volumCaixes)
-    const counts = celulesPerFragmentFidelAlVolum(vols, MOSAIC_CELLS)
-    return { pisos: construirPalet3DPisos(frags, counts), frags }
-  }, [palet.fragments, palet.index, palet.planPisos, paradesCompletades])
-
-  const filaModalDescarrega =
-    paradaEntregaIndex !== undefined
-      ? [...totsFrags].sort((a, b) => {
-          const pa = a.paradaIndex === paradaEntregaIndex ? 0 : 1
-          const pb = b.paradaIndex === paradaEntregaIndex ? 0 : 1
-          return pa - pb
-        })
-      : totsFrags
+  const n = grupsCarrega.length
 
   return (
-    <div aria-modal role="dialog" className="fixed inset-0 z-[2100] flex items-end justify-center p-4 sm:items-center">
+    <div
+      aria-modal
+      role="dialog"
+      className="fixed inset-0 z-[2100] flex items-end justify-center p-3 pb-[max(0.75rem,env(safe-area-inset-bottom))] sm:items-center sm:p-4"
+    >
       <button aria-label="Tancar" className="absolute inset-0 bg-black/40" onClick={onTancar} type="button" />
-      <div className="relative z-10 w-full max-w-3xl rounded-xl border border-slate-200 bg-white p-5 shadow-2xl">
-        <div className="flex items-start justify-between gap-3 border-b border-slate-100 pb-4">
-          <h3 className="text-base font-semibold text-slate-900">
-            Detall del palet
+      <div className="relative z-10 flex max-h-[min(92dvh,880px)] w-full max-w-lg flex-col overflow-hidden rounded-xl border border-slate-200 bg-white shadow-2xl">
+        <div className="flex shrink-0 items-start justify-between gap-3 border-b border-slate-100 px-4 py-3 sm:px-5 sm:py-4">
+          <div>
+            <h3 className="text-base font-semibold text-slate-900">
+              {enContextRetornable
+                ? 'Envasos retornats'
+                : enContextRuta
+                  ? 'Productes a lliurar'
+                  : 'Ordre de càrrega'}
+            </h3>
+            
             {paradaEntregaIndex !== undefined ? (
-              <span className="mt-0.5 block text-xs font-normal text-slate-500">
-                Marcat en verd: descàrrega en aquest punt · Gris: altres entregues
-              </span>
+              <p className="mt-1.5 text-xs text-slate-500">
+                {enContextRetornable
+                  ? 'Emmagatzema aquí els envasos retornats:'
+                  : 'Verd: descàrrega en aquest punt · Gris: altres parades'}
+              </p>
             ) : null}
-          </h3>
+          </div>
           <button
             className={buttonCn('outline', 'default', 'shrink-0 px-3 py-1.5')}
             onClick={onTancar}
@@ -679,289 +365,126 @@ function ModalDetall({
             Tancar
           </button>
         </div>
-        <div className="mt-4 grid grid-cols-[280px_1fr] gap-4">
-          <div className="flex flex-col gap-2">
-            <p className="shrink-0 text-center text-[0.68rem] font-medium leading-snug text-sky-900">
-              {tePlanPisos ? (
-                <>
-                  Prioritat barrils: {BARRILS_MAX_PER_PIS} ranures / pis · després caixes al volum que sobra
-                  <span className="mt-0.5 block font-normal text-slate-500">
-                    Vista gràfica: si el palet té <span className="font-semibold text-sky-950">cap barril</span>,{' '}
-                    <span className="font-semibold text-sky-950">tots els pisos</span> es divideixen en{' '}
-                    <span className="font-semibold text-sky-950">6 quadrats</span> (2×3), mai en 12 (3×4). Cada barril
-                    ocupa un quadrat i la mateixa posició al pis superior (vertical); al pis 5 un barril tombat usa la
-                    mateixa graella sense pis 6. Quadrat sense barril: es parteix en <span className="font-semibold text-sky-950">2 meitats</span> (fins 2 caixes eq.). Palet només amb caixes: 3×4. 1 barril = 4 caixes eq.
-                  </span>
-                  <span className="mt-0.5 block font-normal text-slate-500">
-                    Caixes: ~{Math.round((1 - FORAT_ALINEACIO_CAIXES) * 100)}% del buit usable es perd per no
-                    alinear amb els barrils.
-                  </span>
-                </>
-              ) : (
-                <>
-                  Planta {PALLET3D_AMPLADA}×{PALLET3D_FONDARIA} · {PALLET3D_PISOS} pisos (vista heretada)
-                  <span className="mt-0.5 block font-normal text-slate-500">
-                    Sense pla per pis guardat: graella per volum de fragments.
-                  </span>
-                </>
-              )}
-            </p>
-            <p className="text-center text-[0.7rem] font-semibold tabular-nums text-slate-800">
-              Ocupació del palet: {Math.round(palet.ocupatCaixes)} / {CAIXES_PER_PALLET} caixes eq.
-            </p>
-            {totsFrags.length === 0 ? (
-              <div className="rounded border border-slate-200 bg-[#F5ECD8] p-4">
-                <p className="text-sm text-slate-500">Sense càrrega en aquest palet.</p>
-              </div>
-            ) : tePlanPisos ? (
-              <div className="flex flex-col gap-2 rounded border border-slate-200 bg-[#F5ECD8] p-2">
-                <div
-                  className="flex flex-wrap justify-center gap-1"
-                  role="tablist"
-                  aria-label="Pisos del palet"
-                >
-                  {Array.from({ length: PALLET3D_PISOS }, (_, pisDesDeBase) => (
-                    <button
-                      className={cn(
-                        'rounded-full px-2.5 py-1 text-[0.62rem] font-semibold transition-colors',
-                        pisTab === pisDesDeBase
-                          ? 'bg-slate-900 text-white shadow-sm'
-                          : 'bg-white/80 text-slate-700 ring-1 ring-slate-300/80 hover:bg-white',
-                      )}
-                      key={pisDesDeBase}
-                      role="tab"
-                      type="button"
-                      aria-selected={pisTab === pisDesDeBase}
-                      onClick={() => setPisTab(pisDesDeBase)}
-                    >
-                      Pis {pisDesDeBase + 1}
-                      {pisDesDeBase === 0 ? ' · base' : pisDesDeBase === PALLET3D_PISOS - 1 ? ' · dalt' : ''}
-                    </button>
-                  ))}
-                </div>
-                {(() => {
-                  const pisDesDeBase = pisTab
-                  const pla = palet.planPisos![pisDesDeBase]!
-                  return (
-                    <div className="flex flex-col items-center gap-2 pt-1">
-                      <p className="text-center text-[0.62rem] text-slate-600">
-                        {pisDesDeBase === 0
-                          ? 'Base — primer omplert'
-                          : pisDesDeBase === PALLET3D_PISOS - 1
-                            ? 'Pis superior (tombat si cal)'
-                            : 'Pis intermedi'}
-                      </p>
-                      <p className="text-center text-[0.58rem] text-slate-600">
-                        Marge teòric per caixes (abans forat):{' '}
-                        {Math.max(0, VOLUM_CAIXES_EQ_MAX_PER_PIS - pla.volumBarrilsCaixesEq).toFixed(1)} caixes eq.
-                      </p>
-                      <GraellaPisBarrilsICaixes
-                        colorBarril={CAT_COLOR.barril}
-                        colorCaixa={CAT_COLOR.caja}
-                        paletIndex={palet.index}
-                        pisDesDeBase={pisDesDeBase}
-                        planPisos={palet.planPisos!}
-                      />
-                    </div>
-                  )
-                })()}
-              </div>
-            ) : graellaMosaicLegacy ? (
-              <div className="flex flex-col gap-2 rounded border border-slate-200 bg-[#F5ECD8] p-2">
-                <div
-                  className="flex flex-wrap justify-center gap-1"
-                  role="tablist"
-                  aria-label="Pisos del palet"
-                >
-                  {Array.from({ length: PALLET3D_PISOS }, (_, pisDesDeBase) => (
-                    <button
-                      className={cn(
-                        'rounded-full px-2.5 py-1 text-[0.62rem] font-semibold transition-colors',
-                        pisTab === pisDesDeBase
-                          ? 'bg-slate-900 text-white shadow-sm'
-                          : 'bg-white/80 text-slate-700 ring-1 ring-slate-300/80 hover:bg-white',
-                      )}
-                      key={pisDesDeBase}
-                      role="tab"
-                      type="button"
-                      aria-selected={pisTab === pisDesDeBase}
-                      onClick={() => setPisTab(pisDesDeBase)}
-                    >
-                      Pis {pisDesDeBase + 1}
-                      {pisDesDeBase === 0 ? ' · base' : pisDesDeBase === PALLET3D_PISOS - 1 ? ' · dalt' : ''}
-                    </button>
-                  ))}
-                </div>
-                {(() => {
-                  const pisDesDeBase = pisTab
-                  const planta = graellaMosaicLegacy.pisos[pisDesDeBase]!
-                  const nEtiqueta = pisDesDeBase + 1
-                  return (
-                    <div className="flex flex-col items-center gap-1.5 pt-1">
-                      <p className="text-center text-[0.62rem] text-slate-600">
-                        {pisDesDeBase === 0
-                          ? 'Apoiat al terra del camió — primer omplert'
-                          : pisDesDeBase === PALLET3D_PISOS - 1
-                            ? 'Part alta de la pila'
-                            : 'Pis intermedi'}
-                      </p>
-                      <div className="mx-auto w-full max-w-[200px]">
-                        <div
-                          className="grid aspect-[3/4] w-full gap-0.5 rounded border border-[#7A4820]/40 bg-[#E8DCC4] p-1 shadow-inner"
-                          style={{
-                            gridTemplateColumns: `repeat(${PALLET3D_AMPLADA}, minmax(0, 1fr))`,
-                            gridTemplateRows: `repeat(${PALLET3D_FONDARIA}, minmax(0, 1fr))`,
-                          }}
-                        >
-                          {planta.flatMap((fila, r) =>
-                            fila.map((fragIdx, c) => {
-                              const buit = fragIdx === null
-                              const f =
-                                fragIdx !== null ? graellaMosaicLegacy.frags[fragIdx] ?? null : null
-                              const cat = f ? catCarrega(f) : null
-                              const color = f && cat ? CAT_COLOR[cat] : '#D4C4A8'
-                              const descarregarAqui =
-                                f != null &&
-                                paradaEntregaIndex !== undefined &&
-                                f.paradaIndex === paradaEntregaIndex
-                              const idxTots = fragIdx ?? -1
-                              const esResaltat =
-                                fragIdx !== null &&
-                                fragmentResaltatIndex !== null &&
-                                fragmentResaltatIndex === idxTots
-                              const altresApagats =
-                                !buit &&
-                                fragmentResaltatIndex !== null &&
-                                fragmentResaltatIndex !== idxTots
-                              const d = f ? densitatKgPerCaixaEq(f) : 0
-                              const title = f
-                                ? `${nomProducteVisible(f)} · pis ${nEtiqueta} · ~${d.toFixed(1)} kg/caixa eq.`
-                                : 'Buit'
-                              return (
-                                <button
-                                  aria-label={title}
-                                  className={`relative min-h-0 min-w-0 rounded-[2px] border border-black/10 outline-none transition-all ${
-                                    buit
-                                      ? 'cursor-default bg-[#D4C4A8]/70'
-                                      : 'cursor-pointer hover:brightness-105'
-                                  } ${
-                                    !buit && paradaEntregaIndex !== undefined && !descarregarAqui
-                                      ? 'opacity-[0.42]'
-                                      : ''
-                                  } ${
-                                    !buit && descarregarAqui
-                                      ? 'ring-1 ring-emerald-600 ring-offset-0'
-                                      : ''
-                                  } ${altresApagats ? '!opacity-[0.32]' : ''} ${
-                                    esResaltat
-                                      ? 'z-[8] scale-110 shadow-md ring-2 ring-slate-900 !opacity-100'
-                                      : ''
-                                  }`}
-                                  disabled={buit}
-                                  key={`mos-${palet.index}-p${pisDesDeBase}-${r}-${c}`}
-                                  style={{
-                                    background: color,
-                                    opacity: buit ? 0.55 : 0.92,
-                                  }}
-                                  title={title}
-                                  type="button"
-                                  onMouseEnter={() => !buit && setFragmentResaltatIndex(idxTots)}
-                                  onMouseLeave={() => setFragmentResaltatIndex(null)}
-                                >
-                                  {f && cat === 'barril' ? (
-                                    <span className="pointer-events-none absolute inset-0 m-px flex items-center justify-center">
-                                      <span className="aspect-square h-[55%] max-h-full rounded-full border border-white/30 bg-black/10" />
-                                    </span>
-                                  ) : null}
-                                </button>
-                              )
-                            }),
-                          )}
-                        </div>
-                      </div>
-                    </div>
-                  )
-                })()}
-              </div>
-            ) : null}
-          </div>
 
-          <div className="max-h-[min(52vh,380px)] space-y-3 overflow-y-auto pr-1">
-            {totsFrags.length === 0 ? (
-              <p className="text-sm text-slate-500">Sense línies en aquest palet.</p>
-            ) : (
-              filaModalDescarrega.map((f, i) => {
-                const nom = nomProducteVisible(f)
-                const client = clientEntrega(f)
-                const qInfo = etiquetaQuantitat(f)
-                const descarregarAqui =
-                  paradaEntregaIndex !== undefined && f.paradaIndex === paradaEntregaIndex
-                const idxTots = totsFrags.indexOf(f)
-                const cat = catCarrega(f)
-                const colorCat = CAT_COLOR[cat]
-                const esResaltat =
-                  fragmentResaltatIndex !== null && fragmentResaltatIndex === idxTots
-                return (
-                  <div
-                    className={`flex gap-3 rounded-lg border px-3 py-2.5 transition-all duration-150 ${
-                      paradaEntregaIndex !== undefined
-                        ? descarregarAqui
-                          ? 'border-emerald-400 bg-emerald-50/90 shadow-sm'
-                          : 'border-slate-200 bg-slate-100/70 opacity-80'
-                        : 'border-slate-200 bg-slate-50/80'
-                    } ${esResaltat ? 'border-slate-900 bg-white shadow-md ring-2 ring-slate-900/25' : ''}`}
-                    key={`detall-${palet.index}-${i}-${f.producteId}-${f.paradaIndex}`}
-                    onMouseEnter={() => setFragmentResaltatIndex(idxTots)}
-                    onMouseLeave={() => setFragmentResaltatIndex(null)}
-                  >
-                    <div
-                      aria-hidden
-                      className="mt-0.5 shrink-0 rounded-md shadow-inner"
-                      style={{
-                        width: '10px',
-                        alignSelf: 'stretch',
-                        minHeight: '3rem',
-                        background: colorCat,
-                        boxShadow: `inset 0 0 0 1px rgba(0,0,0,0.06)`,
-                      }}
-                      title={CAT_LABEL[cat]}
-                    />
-                    <div className="min-w-0 flex-1">
-                      {paradaEntregaIndex !== undefined ? (
-                        <p className="mb-2 text-[0.65rem] font-bold uppercase tracking-wide">
-                          {descarregarAqui ? (
-                            <span className="text-emerald-800">Descarregar en aquest punt</span>
-                          ) : (
-                            <span className="text-slate-500">Altres entregues — mantenir al camió</span>
-                          )}
-                        </p>
-                      ) : null}
-                      <div className="mb-1 flex flex-wrap items-center gap-x-2 gap-y-0.5">
-                        <span
-                          className="inline-flex items-center rounded-full px-2 py-0.5 text-[0.65rem] font-semibold uppercase tracking-wide text-white shadow-sm"
-                          style={{ background: colorCat }}
-                        >
-                          {CAT_LABEL[cat]}
-                        </span>
-                      </div>
-                      <p className="text-sm text-slate-900">
-                        <span className="text-slate-500">Producte:</span>{' '}
-                        <span className="font-medium">{nom}</span>
-                      </p>
-                      <p className="mt-1.5 text-sm text-slate-900">
-                        <span className="text-slate-500">Client:</span>{' '}
-                        <span className="font-medium">{client}</span>
-                      </p>
-                      <p className="mt-1.5 text-sm text-slate-900">
-                        <span className="text-slate-500">{qInfo.label}:</span>{' '}
-                        <span className="font-medium">{qInfo.valor}</span>
-                      </p>
-                    </div>
-                  </div>
-                )
-              })
-            )}
-          </div>
+        <div className="flex min-h-0 flex-1 flex-col px-4 py-3 sm:px-5 sm:py-4">
+          {totsFrags.length === 0 ? (
+            <div className="flex flex-1 items-center justify-center py-10">
+              <p className="text-center text-sm text-slate-500">Sense càrrega en aquest palet.</p>
+            </div>
+          ) : (
+            <div className="flex min-h-0 flex-1 flex-col overflow-hidden rounded-lg border border-slate-200 bg-slate-50/80">
+              <div className="min-h-0 flex-1 overflow-y-auto overscroll-contain [-webkit-overflow-scrolling:touch]">
+                <ul className="divide-y divide-slate-200">
+                  {grupsCarrega.map((grup, idxVisual) => {
+                    const f = grup.representant
+                    const pasDesDeBase = idxVisual + 1
+                    const nom = nomProducteVisible(f)
+                    const client = clientEntrega(f)
+                    const qInfo = etiquetaQuantitat({
+                      ...f,
+                      quantitatUnitatComanda: grup.quantitatTotal,
+                    })
+                    const cat = catCarrega(f)
+                    const colorCat = CAT_COLOR[cat]
+                    const descarregarAqui =
+                      paradaEntregaIndex !== undefined &&
+                      grup.fragments.some((x) => x.paradaIndex === paradaEntregaIndex)
+                    const teEntregaCancelada =
+                      paradaEntregaIndex !== undefined &&
+                      grup.fragments.some((x) => paradesCancelades?.has(x.paradaIndex))
+                    const esPrimer = pasDesDeBase === 1
+                    const esDarrer = pasDesDeBase === n
+                    const nLiniesAgrupades = grup.fragments.length
+                    return (
+                      <li
+                        className={`flex gap-3 px-3 py-2.5 sm:px-4 ${
+                          paradaEntregaIndex !== undefined
+                            ? descarregarAqui
+                              ? 'bg-emerald-50/95'
+                              : 'bg-slate-100/60 opacity-85'
+                            : 'bg-white'
+                        }`}
+                        key={`${palet.index}-${grup.clau}-${grup.minOrdreIdx}`}
+                      >
+                        <div className="flex shrink-0 flex-col items-center gap-0.5 pt-0.5">
+                          <span
+                            className={`flex h-8 w-8 shrink-0 items-center justify-center rounded-full text-xs font-bold tabular-nums ${
+                              esPrimer
+                                ? 'bg-amber-100 text-amber-950 ring-2 ring-amber-400/80'
+                                : esDarrer
+                                  ? 'bg-slate-200 text-slate-800'
+                                  : 'bg-slate-200/90 text-slate-800'
+                            }`}
+                            title={
+                              esPrimer
+                                ? 'Col·locar primer (terra del palet)'
+                                : esDarrer
+                                  ? 'Darrera capa (damunt del palet)'
+                                  : `Capa ${pasDesDeBase} des de la base`
+                            }
+                          >
+                            {pasDesDeBase}
+                          </span>
+                        </div>
+                        <div
+                          aria-hidden
+                          className="mt-0.5 w-2 shrink-0 self-stretch rounded-sm"
+                          style={{ background: colorCat, minHeight: '2.75rem' }}
+                          title={CAT_LABEL[cat]}
+                        />
+                        <div className="min-w-0 flex-1">
+                          <div className="mb-1 flex flex-wrap items-center gap-2">
+                            <span
+                              className="inline-flex rounded-full px-2 py-0.5 text-[0.65rem] font-semibold uppercase tracking-wide text-white"
+                              style={{ background: colorCat }}
+                            >
+                              {CAT_LABEL[cat]}
+                            </span>
+                            {esPrimer ? (
+                              <span className="text-[0.65rem] font-semibold uppercase text-amber-800">
+                                Primer a col·locar
+                              </span>
+                            ) : null}
+                            {esDarrer && n > 1 ? (
+                              <span className="text-[0.65rem] font-medium text-slate-500">Damunt del tot</span>
+                            ) : null}
+                          </div>
+                          <p className="text-sm text-slate-900">
+                            <span className="text-slate-500">Producte:</span>{' '}
+                            <span className="font-medium">{nom}</span>
+                          </p>
+                          <p className="mt-1 text-sm text-slate-900">
+                            <span className="text-slate-500">Client:</span>{' '}
+                            <span className="font-medium">{client}</span>
+                          </p>
+                          <p className="mt-1 text-sm text-slate-900">
+                            <span className="text-slate-500">{qInfo.label}:</span>{' '}
+                            <span className="font-medium">{qInfo.valor}</span>
+                            {nLiniesAgrupades > 1 ? (
+                              <span className="ml-1.5 text-xs font-normal text-slate-500">
+                                (suma de {nLiniesAgrupades} línies)
+                              </span>
+                            ) : null}
+                          </p>
+                          {paradaEntregaIndex !== undefined ? (
+                            <p className="mt-1.5 text-[0.65rem] text-slate-600">
+                              {teEntregaCancelada ? (
+                                <span className="font-semibold text-rose-700">Entrega cancel·lada</span>
+                              ) : descarregarAqui ? (
+                                <span className="font-medium text-emerald-800">Descarregar en aquest punt</span>
+                              ) : (
+                                <span>Altres entregues — mantenir al camió</span>
+                              )}
+                            </p>
+                          ) : null}
+                        </div>
+                      </li>
+                    )
+                  })}
+                </ul>
+              </div>
+            </div>
+          )}
         </div>
       </div>
     </div>
@@ -1003,19 +526,25 @@ export function DistribuidoraCamioPla2D({
   encaixaSenseScroll,
   senseLlegenda,
   paradesCompletades,
+  paradesCancelades,
 }: Props) {
   const nPalets = paletsMaximsPerTipus(tipusCamio)
   const { cols, rows } = graellaPalets(nPalets)
-  const [sel, setSel] = useState<PaletOmplert | null>(null)
-  const onTancar = useCallback(() => setSel(null), [])
+  const [selIndex, setSelIndex] = useState<number | null>(null)
+  const onTancar = useCallback(() => setSelIndex(null), [])
+  const sel = useMemo(
+    () => (selIndex == null ? null : pla.palets.find((p) => p.index === selIndex) ?? null),
+    [pla.palets, selIndex],
+  )
 
   const outerRef = useRef<HTMLDivElement>(null)
   const innerRef = useRef<HTMLDivElement>(null)
   const [escalaEncaix, setEscalaEncaix] = useState(1)
 
   const sc = compacte ? 0.72 : 1
-  const paletW = Math.round((rows === 1 ? 170 : 178) * sc)
-  const paletH = Math.round((rows === 1 ? 126 : 112) * sc)
+  /** Miniatures una mica més grans per veure millor barrils/caixes des de fora. */
+  const paletW = Math.round((rows === 1 ? 198 : 206) * sc)
+  const paletH = Math.round((rows === 1 ? 148 : 130) * sc)
   const gridGap = Math.round(9 * sc)
   const gridPad = Math.round(14 * sc)
   const boxHeight = rows * paletH + (rows - 1) * gridGap + gridPad * 2
@@ -1081,8 +610,8 @@ export function DistribuidoraCamioPla2D({
               return (
                 <div className="min-h-0 min-w-0" key={palet.index} style={{ gridColumn: col, gridRow: row }}>
                   <CeldaPalet
-                    actiu={sel?.index === palet.index}
-                    onSelect={setSel}
+                    actiu={selIndex === palet.index}
+                    onSelect={setSelIndex}
                     ordreCabina={ordre}
                     palet={palet}
                     paradaEntregaIndex={paradaEntregaIndex}
@@ -1131,6 +660,7 @@ export function DistribuidoraCamioPla2D({
           palet={sel}
           paradaEntregaIndex={paradaEntregaIndex}
           paradesCompletades={paradesCompletades}
+          paradesCancelades={paradesCancelades}
         />
       )}
     </div>

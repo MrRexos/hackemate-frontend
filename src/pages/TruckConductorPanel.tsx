@@ -207,7 +207,7 @@ export function TruckConductorPanel({ camio, routeTabVisible = true, onReiniciSi
     for (const idx of completedDeliveryIndices) {
       if (!esParadaMagatzem(idx, n)) fetes++
     }
-    return Math.max(0, totalEntregues - fetes)
+    return Math.max(0, totalEntregues - fetes - 1)
   }, [camio.ruta, completedDeliveryIndices])
 
   const indicesEntregaReconegutsSimulacio = useMemo(() => {
@@ -668,6 +668,7 @@ export function TruckConductorPanel({ camio, routeTabVisible = true, onReiniciSi
                           compacte
                           encaixaSenseScroll
                           paradaEntregaIndex={deliveryFlow.payload.index}
+                          paradesCancelades={skippedDeliveryIndices}
                           paradesCompletades={completedDeliveryIndices}
                           pla={camio.plaCarrega}
                           senseLlegenda
@@ -687,7 +688,7 @@ export function TruckConductorPanel({ camio, routeTabVisible = true, onReiniciSi
                   {liniesModalEntrega.length > 0 ? (
                     <div className="rounded-xl border border-slate-200 bg-slate-50 px-2.5 py-2.5">
                       <p className="text-[11px] font-semibold uppercase tracking-wide text-slate-700">
-                        Mercaderia a entregar aquí
+                        Mercaderia a lliurar aquí
                       </p>
                       <ul className="mt-1.5 max-h-[min(36vh,240px)] space-y-1.5 overflow-y-auto text-xs leading-snug text-slate-800 lg:max-h-[260px]">
                         {liniesModalEntrega.map((l) => (
@@ -715,7 +716,7 @@ export function TruckConductorPanel({ camio, routeTabVisible = true, onReiniciSi
                   onClick={cancelDeliveryAtArrival}
                   type="button"
                 >
-                  Cancel·lar entrega
+                  Cancel·la l&apos;entrega
                 </button>
                 <button
                   className={buttonCn(
@@ -794,6 +795,7 @@ export function TruckConductorPanel({ camio, routeTabVisible = true, onReiniciSi
                       compacte
                       encaixaSenseScroll
                       paradaEntregaIndex={deliveryFlow.index}
+                      paradesCancelades={skippedDeliveryIndices}
                       paradesCompletades={completedDeliveryIndices}
                       pla={camio.plaCarrega}
                       teDesbordament={camio.plaCarrega.teDesbordament}
@@ -829,7 +831,6 @@ export function TruckConductorPanel({ camio, routeTabVisible = true, onReiniciSi
             <p className="mt-3 text-sm leading-relaxed text-slate-600">
               Has completat tota la ruta d’avui. <span className="font-semibold text-slate-800">Fins demà!</span>
             </p>
-            <p className="mt-2 text-xs text-slate-500">Fi de la simulació.</p>
             <button
               className={buttonCn('primary', 'comfortable', 'mt-6 w-full')}
               onClick={dismissJourneyComplete}

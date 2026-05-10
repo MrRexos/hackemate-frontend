@@ -1,8 +1,10 @@
+import { FLEET_EXCEL_CAMIO_ALIASES } from '../data/fleetExcelCamioAliases'
 import { ambSortidaITornadaMollet } from '../data/magatzemMollet'
 import type { Camio } from '../models/Camio'
 import { TipusCamio } from '../models/Camio'
 import type { ParadaRuta } from '../models/Ruta'
 import { Ruta } from '../models/Ruta'
+import { setCamioLookupFromExcel } from '@/data/camioLookupRegistry'
 
 function pt(nom: string, lat: number, lng: number, horaArribadaAprox: string): ParadaRuta {
   return { nom, lat, lng, horaArribadaAprox }
@@ -269,10 +271,42 @@ export type ResultatAssignacio = {
   rutesSenseCamioDisponible: Ruta[]
 }
 
+function normalitzaCodiCamio(s: string): string {
+  return s.trim().toUpperCase()
+}
+
+function mapaAliasesDesEnv(): Map<string, string> {
+  const raw = import.meta.env.VITE_FLEET_CAMIO_ALIASES?.trim()
+  const m = new Map<string, string>()
+  if (!raw) return m
+  for (const part of raw.split(',')) {
+    const [excel, intern] = part.split('=').map((x: string) => x.trim().toUpperCase())
+    if (excel && intern) m.set(excel, intern)
+  }
+  return m
+}
+
+function codiCamioObjectiuDesExcel(excelIdRaw: string): string {
+  const excelId = normalitzaCodiCamio(excelIdRaw)
+  if (!excelId) return ''
+  const desEnv = mapaAliasesDesEnv().get(excelId)
+  if (desEnv) return normalitzaCodiCamio(desEnv)
+  const taula = FLEET_EXCEL_CAMIO_ALIASES[excelId]
+  if (taula) return normalitzaCodiCamio(taula)
+  return excelId
+}
+
 /**
- * Assigna cada ruta al primer camió disponible amb el mateix tipus que demana la ruta.
+ * Assigna rutes als camions: primer per `codi` Excel (o àlies) coincident i tipus adequat,
+ * després primer camió lliure del mateix `tipusCamioRequerit`.
  */
-export function assignarRutesACamions(camions: Camio[], rutes: Ruta[]): ResultatAssignacio {
+export function assignarRutesACamionsDesExcel(
+  camions: Camio[],
+  rutes: Ruta[],
+  codiCamioExcelPerRutaId: Record<string, string>,
+): ResultatAssignacio {
+  const lookupExcelToInternal: Record<string, string> = {}
+
   for (const camio of camions) {
     camio.desassignarRuta()
   }
@@ -280,16 +314,42 @@ export function assignarRutesACamions(camions: Camio[], rutes: Ruta[]): Resultat
   const senseCamioDisponible: Ruta[] = []
 
   for (const ruta of rutes) {
-    const camio = camions.find((c) => c.tipus === ruta.tipusCamioRequerit && c.teRutaDisponible)
+    const excelId = (codiCamioExcelPerRutaId[ruta.id] ?? '').trim()
+    const codiObjectiu = excelId ? codiCamioObjectiuDesExcel(excelId) : ''
+    const codiNorm = codiObjectiu ? normalitzaCodiCamio(codiObjectiu) : ''
+
+    let camio: Camio | undefined
+
+    if (codiNorm) {
+      camio = camions.find((c) => normalitzaCodiCamio(c.codi) === codiNorm && c.teRutaDisponible)
+    }
+
+    if (!camio) {
+      camio = camions.find((c) => c.tipus === ruta.tipusCamioRequerit && c.teRutaDisponible)
+    }
+
     if (!camio) {
       senseCamioDisponible.push(ruta)
       continue
     }
     camio.assignarRuta(ruta)
+    if (excelId) {
+      lookupExcelToInternal[excelId] = camio.codi
+    }
   }
+
+  setCamioLookupFromExcel(lookupExcelToInternal)
 
   return {
     rutesAssignades: rutes.length - senseCamioDisponible.length,
     rutesSenseCamioDisponible: senseCamioDisponible,
   }
+}
+
+/**
+ * Assigna cada ruta al primer camió disponible amb el mateix tipus que demana la ruta.
+ */
+export function assignarRutesACamions(camions: Camio[], rutes: Ruta[]): ResultatAssignacio {
+  const buit: Record<string, string> = {}
+  return assignarRutesACamionsDesExcel(camions, rutes, buit)
 }

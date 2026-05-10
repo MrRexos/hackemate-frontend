@@ -18,16 +18,17 @@ export function densitatKgPerCaixaEq(f: FragmentPalet): number {
 
 /**
  * Ordre cap a la base del palet (índex 0 = terra).
- * Retornables abans que la mercaderia; dins cada grup barrils sota caixes (i llaunes).
+ * Retornables al final (van a dalt de tot del palet); dins cada grup barrils sota caixes i llaunes
+ * (pack = mateixa capa que caixa).
  */
 export function compararFragmentPerBasePrimer(a: FragmentPalet, b: FragmentPalet): number {
-  const capBase = (f: FragmentPalet) => (f.esRetornable ? 0 : 1)
+  const capBase = (f: FragmentPalet) => (f.esRetornable ? 1 : 0)
   const ca = capBase(a)
   const cb = capBase(b)
   if (ca !== cb) return ca - cb
 
   const rankBase = (u: string | undefined) =>
-    u === 'BARRIL' ? 0 : u === 'CAIXA' ? 1 : 2
+    u === 'BARRIL' ? 0 : u === 'CAIXA' || u === 'LLAUNA' ? 1 : 2
   const ra = rankBase(a.unitat)
   const rb = rankBase(b.unitat)
   if (ra !== rb) return ra - rb

@@ -1,9 +1,9 @@
-/** Unitats de volum segons regles d’equivalència (caixa / llauna / barril). */
+/** Unitats de volum: `LLAUNA` = paquet (24 unitats) ≡ 1 caixa eq. al palet, mateix que `CAIXA`. */
 export type UnitatVolum = 'CAIXA' | 'LLAUNA' | 'BARRIL'
 
 /**
  * Línia de distribució per una parada (vindrà de l’API / BD).
- * `pesKgPerUnitat`: pes d’una unitat en l’empaquetat indicat (caixa, llauna o barril).
+ * `pesKgPerUnitat`: pes d’una **unitat de comanda** (caixa, paquet de llaunes o barril).
  */
 export type LiniaDistribucio = {
   paradaIndex: number

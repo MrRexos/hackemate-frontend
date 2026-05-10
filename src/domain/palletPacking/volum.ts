@@ -1,14 +1,16 @@
-import { CAIXES_PER_BARRIL, LLAUNES_PER_CAIXA } from './constants'
+import { CAIXES_PER_BARRIL } from './constants'
 import type { UnitatVolum } from './types'
 
-/** Converteix quantitat + unitat a «equivalents de caixa» (volum per omplir palets). */
+/**
+ * Converteix quantitat + unitat a «equivalents de caixa» (volum per omplir palets).
+ * `LLAUNA`: cada unitat de comanda és un paquet de 24 llaunes (= 1 caixa eq.), mateix tractament que `CAIXA`.
+ */
 export function volumEnCaixes(quantitat: number, unitat: UnitatVolum): number {
   if (!Number.isFinite(quantitat) || quantitat <= 0) return 0
   switch (unitat) {
     case 'CAIXA':
-      return quantitat
     case 'LLAUNA':
-      return quantitat / LLAUNES_PER_CAIXA
+      return quantitat
     case 'BARRIL':
       return quantitat * CAIXES_PER_BARRIL
     default: {
@@ -27,12 +29,9 @@ const EPS = 1e-9
 export function quantitatFisicaDesDeVolumCaixes(volumCaixesFragment: number, unitat: UnitatVolum): number {
   if (!Number.isFinite(volumCaixesFragment) || volumCaixesFragment <= EPS) return 0
   switch (unitat) {
-    case 'CAIXA': {
-      const q = Math.round(volumCaixesFragment)
-      return q > 0 ? q : volumCaixesFragment > EPS ? 1 : 0
-    }
+    case 'CAIXA':
     case 'LLAUNA': {
-      const q = Math.round(volumCaixesFragment * LLAUNES_PER_CAIXA)
+      const q = Math.round(volumCaixesFragment)
       return q > 0 ? q : volumCaixesFragment > EPS ? 1 : 0
     }
     case 'BARRIL': {

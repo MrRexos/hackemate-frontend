@@ -38,23 +38,21 @@ export function TruckDetailsPage() {
               onClick={() => setActiveTab('distribuidora')}
               type="button"
             >
-              Distribuidora
+              Camió
             </button>
             <button
               className={segmentTabCn(activeTab === 'conductor')}
               onClick={() => setActiveTab('conductor')}
               type="button"
             >
-              Conductor
+              Ruta
             </button>
           </div>
 
           <div className={activeTab === 'distribuidora' ? 'flex min-h-0 flex-1 flex-col' : 'hidden'}>
             <div className="shrink-0 space-y-1 pb-2">
-              <h2 className="text-lg font-semibold text-slate-900">Vista distribuidora</h2>
-              <p className="mt-1 max-w-3xl text-slate-600">
-                Pla de palets optimitzat (cabina, ordre d&apos;entregues, 60 caixes/palet) emmagatzemat al camió.
-              </p>
+              <h2 className="text-lg font-semibold text-slate-900">Càrrega Camió:</h2>
+              
             </div>
             <div className="flex min-h-0 flex-1 flex-col items-center justify-center py-6">
               <DistribuidoraPalletPlan camio={camio} plaDistribucioRevision={plaDistribucioRevision} />
