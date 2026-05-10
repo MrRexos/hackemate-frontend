@@ -3,6 +3,8 @@ import * as THREE from 'three'
 import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js'
 import type { LoadPiece, TruckLoadPlan, TruckPallet } from '@/utils/loadPlanner'
 import { materialRuleFor } from '@/utils/loadPlanner'
+import truckTopImage from '../../assets/truck_top.png'
+import vanTopImage from '../../assets/van_top.png'
 
 type TruckLoadPlannerProps = {
   plan: TruckLoadPlan
@@ -33,6 +35,28 @@ export function TruckLoadPlanner({
   const selectedPallet =
     plan.pallets.find((pallet) => pallet.id === selectedPalletId) ?? firstOccupiedPallet
 
+  useEffect(() => {
+    setSelectedPalletId((currentPalletId) => {
+      return plan.pallets.some((pallet) => pallet.id === currentPalletId)
+        ? currentPalletId
+        : firstOccupiedPallet.id
+    })
+  }, [firstOccupiedPallet.id, plan.pallets])
+
+  useEffect(() => {
+    if (!selectedClientId) {
+      return
+    }
+
+    const palletForClient = plan.pallets.find((pallet) =>
+      pallet.clients.some((client) => client.clientId === selectedClientId),
+    )
+
+    if (palletForClient) {
+      setSelectedPalletId(palletForClient.id)
+    }
+  }, [plan.pallets, selectedClientId])
+
   const handleSelectPallet = useCallback((pallet: TruckPallet) => {
     setSelectedPalletId(pallet.id)
     const firstClient = pallet.clients[0]
@@ -40,6 +64,16 @@ export function TruckLoadPlanner({
       onSelectClient(firstClient.clientId)
     }
   }, [onSelectClient])
+
+  if (showFloorPlan) {
+    return (
+      <RouteTruckLoadPlanner
+        onSelectPallet={handleSelectPallet}
+        plan={plan}
+        selectedPallet={selectedPallet}
+      />
+    )
+  }
 
   return (
     <div className="min-w-0">
@@ -67,15 +101,6 @@ export function TruckLoadPlanner({
           ))}
         </div>
       </div>
-
-      {showFloorPlan ? (
-        <TruckTopDownScene
-          onSelectPallet={handleSelectPallet}
-          plan={plan}
-          selectedClientId={selectedClientId}
-          selectedPalletId={selectedPallet.id}
-        />
-      ) : null}
 
       <div className="mt-5 grid grid-cols-[minmax(0,1fr)] gap-6 xl:grid-cols-[minmax(0,0.92fr)_minmax(0,1.08fr)]">
         <div>
@@ -121,19 +146,54 @@ export function TruckLoadPlanner({
   )
 }
 
+function RouteTruckLoadPlanner({
+  onSelectPallet,
+  plan,
+  selectedPallet,
+}: {
+  onSelectPallet: (pallet: TruckPallet) => void
+  plan: TruckLoadPlan
+  selectedPallet: TruckPallet
+}) {
+  return (
+    <div className="route-truck-planner">
+      <div className="route-truck-heading">
+        <h2>Distribución en el camión:</h2>
+        <p>
+          {plan.summary.occupiedPallets}/{plan.summary.totalSlots} palets ocupados ·{' '}
+          {decimalFormatter.format(plan.summary.utilization)}% de capacidad
+        </p>
+      </div>
+
+      <TruckTopDownScene
+        onSelectPallet={onSelectPallet}
+        plan={plan}
+        selectedPalletId={selectedPallet.id}
+      />
+
+      <div className="route-pallet-detail-grid">
+        <RoutePalletInfoCard pallet={selectedPallet} plan={plan} />
+        <div className="route-pallet-visual-card">
+          <PalletThreeScene pallet={selectedPallet} variant="route" />
+          <PalletMaterialLegend pallet={selectedPallet} />
+        </div>
+      </div>
+    </div>
+  )
+}
+
 function TruckTopDownScene({
   onSelectPallet,
   plan,
-  selectedClientId,
   selectedPalletId,
 }: {
   onSelectPallet: (pallet: TruckPallet) => void
   plan: TruckLoadPlan
-  selectedClientId?: string
   selectedPalletId: string
 }) {
   const containerRef = useRef<HTMLDivElement | null>(null)
-  const selectedPallet = plan.pallets.find((pallet) => pallet.id === selectedPalletId) ?? plan.pallets[0]
+  const isVanPlan = plan.constraints.slots <= 3
+  const topImage = isVanPlan ? vanTopImage : truckTopImage
 
   useEffect(() => {
     const container = containerRef.current
@@ -151,7 +211,7 @@ function TruckTopDownScene({
     const palletsById = new Map(plan.pallets.map((pallet) => [pallet.id, pallet]))
 
     const scene = new THREE.Scene()
-    scene.background = new THREE.Color('#fdf9f6')
+    scene.background = new THREE.Color('#fdf4ec')
 
     const camera = new THREE.OrthographicCamera(-1, 1, 1, -1, 0.1, 50)
     camera.position.set(0, 8, 0)
@@ -160,8 +220,10 @@ function TruckTopDownScene({
 
     const renderer = new THREE.WebGLRenderer({ antialias: true })
     renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2))
+    renderer.setClearColor('#fdf4ec', 1)
     renderer.domElement.setAttribute('aria-label', 'Vista superior de la planta del camión')
     renderer.domElement.setAttribute('role', 'img')
+    renderer.domElement.style.background = '#fdf4ec'
     renderer.domElement.style.cursor = 'pointer'
     container.appendChild(renderer.domElement)
 
@@ -170,10 +232,8 @@ function TruckTopDownScene({
     topLight.position.set(0, 6, 0)
     scene.add(topLight)
 
-    const floorMaterial = new THREE.MeshStandardMaterial({ color: '#f6e5d4', roughness: 0.78 })
+    const floorMaterial = new THREE.MeshBasicMaterial({ color: '#fdf4ec' })
     const railMaterial = new THREE.MeshStandardMaterial({ color: '#806a54', roughness: 0.62 })
-    const cabMaterial = new THREE.MeshStandardMaterial({ color: '#d9c8b7', roughness: 0.58 })
-    const glassMaterial = new THREE.MeshStandardMaterial({ color: '#8aa0aa', roughness: 0.35 })
     const dividerMaterial = new THREE.LineBasicMaterial({
       color: '#a99583',
       transparent: true,
@@ -191,21 +251,13 @@ function TruckTopDownScene({
       scene.add(rail)
     }
 
-    const rearRail = new THREE.Mesh(new THREE.BoxGeometry(0.035, 0.08, truckWidth), railMaterial)
-    rearRail.position.set(-truckLength / 2, 0.03, 0)
-    scene.add(rearRail)
-
     const frontRail = new THREE.Mesh(new THREE.BoxGeometry(0.035, 0.08, truckWidth), railMaterial)
-    frontRail.position.set(truckLength / 2, 0.03, 0)
+    frontRail.position.set(-truckLength / 2, 0.03, 0)
     scene.add(frontRail)
 
-    const cab = new THREE.Mesh(new THREE.BoxGeometry(0.64, 0.08, truckWidth * 0.78), cabMaterial)
-    cab.position.set(truckLength / 2 + 0.4, 0.01, 0)
-    scene.add(cab)
-
-    const windshield = new THREE.Mesh(new THREE.BoxGeometry(0.2, 0.09, truckWidth * 0.54), glassMaterial)
-    windshield.position.set(truckLength / 2 + 0.18, 0.06, 0)
-    scene.add(windshield)
+    const rearRail = new THREE.Mesh(new THREE.BoxGeometry(0.035, 0.08, truckWidth), railMaterial)
+    rearRail.position.set(truckLength / 2, 0.03, 0)
+    scene.add(rearRail)
 
     const laneDividerGeometry = new THREE.BufferGeometry().setFromPoints([
       new THREE.Vector3(-truckLength / 2 + 0.16, 0.05, 0),
@@ -215,18 +267,30 @@ function TruckTopDownScene({
 
     for (const pallet of plan.pallets) {
       const palletGroup = createPalletSceneContent(pallet, {
+        dimmed: pallet.id !== selectedPalletId,
         rotate: false,
-        selectedClientId,
       })
       const laneZ = pallet.lane === 'left' ? -lanePitch / 2 : lanePitch / 2
-      palletGroup.position.set(pallet.row * slotPitch - rowOffset, 0.06, laneZ)
+      const slotX = rowOffset - pallet.row * slotPitch
+      const badgeZ = laneZ - 0.22
+      palletGroup.position.set(slotX, 0.06, laneZ)
       palletGroup.scale.setScalar(0.88)
       tagPalletObjects(palletGroup, pallet.id)
       scene.add(palletGroup)
 
+      const hitArea = createPalletHitArea()
+      hitArea.position.set(slotX, 1.16, laneZ)
+      hitArea.userData.palletId = pallet.id
+      scene.add(hitArea)
+
+      const numberBadge = createPalletNumberBadge(pallet.slotNumber, pallet.id === selectedPalletId)
+      numberBadge.position.set(slotX, 1.2, badgeZ)
+      numberBadge.userData.palletId = pallet.id
+      scene.add(numberBadge)
+
       if (pallet.id === selectedPalletId) {
         const frame = createSelectionFrame(1.34, 0.9)
-        frame.position.set(palletGroup.position.x, 0.08, palletGroup.position.z)
+        frame.position.set(slotX, 1.18, laneZ)
         scene.add(frame)
       }
     }
@@ -253,8 +317,9 @@ function TruckTopDownScene({
         viewHeight = viewWidth / aspect
       }
 
-      camera.left = -viewWidth / 2
-      camera.right = viewWidth / 2
+      const cameraLeft = -truckLength / 2 - 0.02
+      camera.left = cameraLeft
+      camera.right = cameraLeft + viewWidth
       camera.top = viewHeight / 2
       camera.bottom = -viewHeight / 2
       camera.updateProjectionMatrix()
@@ -291,45 +356,90 @@ function TruckTopDownScene({
       renderer.dispose()
       renderer.domElement.remove()
     }
-  }, [onSelectPallet, plan, selectedClientId, selectedPalletId])
+  }, [onSelectPallet, plan, selectedPalletId])
 
   return (
-    <section className="mt-5">
-      <div className="mb-3 flex flex-wrap items-end justify-between gap-3">
+    <div className="route-truck-topdown route-truck-topdown-3d">
+      <div className="route-truck-topdown-stage">
+        <img
+          alt=""
+          aria-hidden="true"
+          className={`route-truck-nose-image${isVanPlan ? ' route-truck-nose-image-van' : ''}`}
+          src={topImage}
+        />
+        <div className="route-truck-topdown-canvas" ref={containerRef} />
+      </div>
+      <MaterialLegend legend={plan.materialLegend} />
+    </div>
+  )
+}
+
+function RoutePalletInfoCard({
+  pallet,
+  plan,
+}: {
+  pallet: TruckPallet
+  plan: TruckLoadPlan
+}) {
+  return (
+    <div className="route-pallet-info-card">
+      <div className="route-pallet-info-title">
         <div>
-          <h3 className="text-sm font-bold text-[#47392b]">Planta del camión</h3>
-          <p className="mt-1 text-xs font-medium text-[#806a54]">
-            Vista superior horizontal con los palets en su posición real y los productos por color.
-          </p>
+          <h3>
+            {pallet.id.replace('P', 'PALET ')} · {pallet.positionLabel}
+          </h3>
+          <p>{pallet.clients.length} repartos</p>
         </div>
-        <div className="flex items-center gap-2 rounded-full bg-[#f6e5d4] px-3 py-1.5 text-[11px] font-bold uppercase tracking-wide text-[#806a54]">
-          <span>Puerta trasera</span>
-          <span className="h-px w-8 bg-[#c53030]" />
-          <span>Frontal</span>
-        </div>
+        <span>{pallet.lane === 'left' ? 'Izq.' : 'Der.'}</span>
       </div>
-      <div className="relative min-h-[320px] overflow-hidden rounded-[13px] bg-[#fdf9f6] ring-1 ring-[#f1e5d9]">
-        <div className="absolute inset-0" ref={containerRef} />
-        <div className="pointer-events-none absolute left-3 top-3 rounded-[11px] bg-[#fdf9f6]/95 px-3 py-2 text-xs font-bold text-[#47392b] shadow-sm">
-          Puerta trasera
-        </div>
-        <div className="pointer-events-none absolute right-3 top-3 rounded-[11px] bg-[#fdf9f6]/95 px-3 py-2 text-xs font-bold text-[#47392b] shadow-sm">
-          Cabina
-        </div>
-        <div className="pointer-events-none absolute inset-x-3 bottom-3 rounded-[13px] bg-[#fdf9f6]/95 px-3 py-2 shadow-sm">
-          <p className="truncate text-xs font-bold text-[#47392b]">
-            {selectedPallet.id} · {selectedPallet.positionLabel} ·{' '}
-            {selectedPallet.isEmpty
-              ? 'Palet libre'
-              : selectedPallet.clients.map((client) => `${client.stop}. ${client.name}`).join(' / ')}
-          </p>
-          <p className="mt-1 text-[11px] font-medium text-[#806a54]">
-            {formatPallets(selectedPallet.usedPallets)} pal · {formatKg(selectedPallet.weightKg)} ·{' '}
-            {decimalFormatter.format(selectedPallet.utilization)} %
-          </p>
-        </div>
+
+      <div className="route-pallet-client-list">
+        {pallet.clients.map((client) => (
+          <strong key={client.clientId}>
+            {client.stop}. {client.name}
+          </strong>
+        ))}
+        {pallet.clients.length === 0 ? <strong>Reserva libre</strong> : null}
       </div>
-    </section>
+
+      <div className="route-pallet-metrics">
+        <LoadMetric label="Capacidad" value={`${decimalFormatter.format(pallet.utilization)}%`} />
+        <LoadMetric label="Peso" value={formatKg(pallet.weightKg)} />
+        <LoadMetric label="Volumen" value={formatM3(pallet.volumeM3)} />
+        <LoadMetric label="Límite" value={formatKg(plan.constraints.palletWeightKg)} />
+      </div>
+    </div>
+  )
+}
+
+function MaterialLegend({ legend }: { legend: TruckLoadPlan['materialLegend'] }) {
+  return (
+    <div className="route-material-legend">
+      {legend.map((material) => (
+        <span key={material.type}>
+          <i style={{ backgroundColor: material.color }} />
+          {material.label}
+        </span>
+      ))}
+    </div>
+  )
+}
+
+function PalletMaterialLegend({ pallet }: { pallet: TruckPallet }) {
+  const piecesByType = groupPalletPieces(pallet)
+
+  return (
+    <div className="route-pallet-material-legend">
+      {piecesByType.map((piece) => (
+        <span key={piece.label}>
+          <i style={{ backgroundColor: piece.color }} />
+          <strong>{piece.label}</strong>
+          <small>
+            {decimalFormatter.format(piece.quantity)} u. · {formatKg(piece.weightKg)}
+          </small>
+        </span>
+      ))}
+    </div>
   )
 }
 
@@ -391,7 +501,13 @@ function PalletSlotButton({
   )
 }
 
-function PalletThreeScene({ pallet }: { pallet: TruckPallet }) {
+function PalletThreeScene({
+  pallet,
+  variant = 'default',
+}: {
+  pallet: TruckPallet
+  variant?: 'default' | 'route'
+}) {
   const containerRef = useRef<HTMLDivElement | null>(null)
 
   useEffect(() => {
@@ -462,7 +578,12 @@ function PalletThreeScene({ pallet }: { pallet: TruckPallet }) {
   }, [pallet])
 
   return (
-    <div className="relative min-h-[360px] overflow-hidden rounded-[13px] bg-[#f6e5d4]" ref={containerRef}>
+    <div
+      className={variant === 'route'
+        ? 'route-pallet-visual-scene'
+        : 'relative min-h-[360px] overflow-hidden rounded-[13px] bg-[#f6e5d4]'}
+      ref={containerRef}
+    >
       {pallet.isEmpty ? (
         <div className="pointer-events-none absolute inset-x-0 top-4 text-center text-sm font-bold text-[#806a54]">
           Palet libre
@@ -472,23 +593,33 @@ function PalletThreeScene({ pallet }: { pallet: TruckPallet }) {
   )
 }
 
-function SelectedPalletDetails({ pallet }: { pallet: TruckPallet }) {
-  const piecesByType = useMemo(() => {
-    const groups = new Map<string, { label: string; color: string; weightKg: number; palletShare: number }>()
-    for (const piece of pallet.pieces) {
-      const rule = materialRuleFor(piece.productType)
-      const current = groups.get(piece.productType) ?? {
-        label: rule.label,
-        color: rule.color,
-        weightKg: 0,
-        palletShare: 0,
-      }
-      current.weightKg += piece.weightKg
-      current.palletShare += piece.palletShare
-      groups.set(piece.productType, current)
+function groupPalletPieces(pallet: TruckPallet) {
+  const groups = new Map<string, {
+    color: string
+    label: string
+    palletShare: number
+    quantity: number
+    weightKg: number
+  }>()
+  for (const piece of pallet.pieces) {
+    const rule = materialRuleFor(piece.productType)
+    const current = groups.get(piece.productType) ?? {
+      color: rule.color,
+      label: rule.label,
+      palletShare: 0,
+      quantity: 0,
+      weightKg: 0,
     }
-    return [...groups.values()].sort((a, b) => b.palletShare - a.palletShare)
-  }, [pallet.pieces])
+    current.weightKg += piece.weightKg
+    current.palletShare += piece.palletShare
+    current.quantity += piece.quantity
+    groups.set(piece.productType, current)
+  }
+  return [...groups.values()].sort((a, b) => b.palletShare - a.palletShare)
+}
+
+function SelectedPalletDetails({ pallet }: { pallet: TruckPallet }) {
+  const piecesByType = useMemo(() => groupPalletPieces(pallet), [pallet])
 
   return (
     <div className="mt-4 grid gap-4">
@@ -544,7 +675,7 @@ function LoadMetric({ label, value }: { label: string; value: string }) {
 
 function createPalletSceneContent(
   pallet: TruckPallet,
-  options: { rotate?: boolean; selectedClientId?: string } = {},
+  options: { dimmed?: boolean; rotate?: boolean; selectedClientId?: string } = {},
 ) {
   const group = new THREE.Group()
   group.add(createPalletBase())
@@ -564,7 +695,9 @@ function createPalletSceneContent(
     const size = unitSize(unit)
     const baseY = 0.1 + cellHeights[cellIndex]
     const mesh = createLoadMesh(unit, size, {
-      dimmed: Boolean(options.selectedClientId && unit.clientId !== options.selectedClientId),
+      dimmed: Boolean(
+        options.dimmed || (options.selectedClientId && unit.clientId !== options.selectedClientId),
+      ),
     })
     mesh.position.set(position.x, baseY + size.height / 2, position.z)
     cellHeights[cellIndex] += size.height + 0.014
@@ -640,9 +773,10 @@ function createLoadMesh(
 
 function createSelectionFrame(width: number, depth: number) {
   const group = new THREE.Group()
-  const material = new THREE.MeshBasicMaterial({ color: '#c53030' })
+  const material = new THREE.MeshBasicMaterial({ color: '#c53030', depthTest: false })
   const horizontalGeometry = new THREE.BoxGeometry(width, 0.035, 0.035)
   const verticalGeometry = new THREE.BoxGeometry(0.035, 0.035, depth)
+  group.renderOrder = 10
 
   for (const z of [-depth / 2, depth / 2]) {
     const line = new THREE.Mesh(horizontalGeometry, material)
@@ -657,6 +791,55 @@ function createSelectionFrame(width: number, depth: number) {
   }
 
   return group
+}
+
+function createPalletHitArea() {
+  const material = new THREE.MeshBasicMaterial({
+    colorWrite: false,
+    depthWrite: false,
+    transparent: true,
+    opacity: 0,
+  })
+  return new THREE.Mesh(new THREE.BoxGeometry(1.36, 0.06, 0.92), material)
+}
+
+function createPalletNumberBadge(slotNumber: number, selected: boolean) {
+  const size = 128
+  const canvas = document.createElement('canvas')
+  canvas.height = size
+  canvas.width = size
+  const context = canvas.getContext('2d')
+
+  if (context) {
+    context.clearRect(0, 0, size, size)
+    context.beginPath()
+    context.arc(size / 2, size / 2, 45, 0, Math.PI * 2)
+    context.fillStyle = selected ? '#c53030' : '#fffaf6'
+    context.fill()
+    context.lineWidth = selected ? 0 : 5
+    context.strokeStyle = 'rgba(169, 149, 131, 0.46)'
+    if (!selected) {
+      context.stroke()
+    }
+    context.fillStyle = selected ? '#ffffff' : '#8b7a6a'
+    context.font = '700 50px Inter, Arial, sans-serif'
+    context.textAlign = 'center'
+    context.textBaseline = 'middle'
+    context.fillText(String(slotNumber), size / 2, size / 2 + 2)
+  }
+
+  const texture = new THREE.CanvasTexture(canvas)
+  texture.colorSpace = THREE.SRGBColorSpace
+  const material = new THREE.SpriteMaterial({
+    depthTest: false,
+    depthWrite: false,
+    map: texture,
+    transparent: true,
+  })
+  const sprite = new THREE.Sprite(material)
+  sprite.renderOrder = 12
+  sprite.scale.set(0.32, 0.32, 1)
+  return sprite
 }
 
 function tagPalletObjects(group: THREE.Object3D, palletId: string) {
@@ -728,6 +911,12 @@ function unitSize(unit: VisualUnit) {
 
 function disposeObject(object: THREE.Object3D) {
   object.traverse((child) => {
+    if (child instanceof THREE.Sprite) {
+      child.material.map?.dispose()
+      child.material.dispose()
+      return
+    }
+
     if (child instanceof THREE.Mesh || child instanceof THREE.LineSegments || child instanceof THREE.Line) {
       child.geometry.dispose()
       if (Array.isArray(child.material)) {

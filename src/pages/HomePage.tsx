@@ -2,12 +2,16 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import * as L from 'leaflet'
 import {
   ArrowUpRight,
+  Award,
   Box,
   Calendar,
+  ChevronDown,
+  ChevronUp,
   Grid3X3,
   Package,
   Percent,
   Road,
+  ThumbsDown,
   UsersRound,
   Weight,
   type LucideIcon,
@@ -19,7 +23,8 @@ import { planningDataset } from '@/data/planningData'
 import { useDocumentTitle } from '@/hooks/useDocumentTitle'
 import { siteConfig } from '@/lib/site'
 import type { AppView } from '@/types/navigation'
-import type { PlanningDay, PlanningDaySummary, TruckType } from '@/types/planning'
+import type { PlanningDay, PlanningDaySummary, PlanningLoadRow, TruckType } from '@/types/planning'
+import { getRoadRoutePolyline } from '@/utils/roadRouting'
 import {
   buildDistributionPlan,
   getDefaultAvailability,
@@ -81,7 +86,9 @@ const truckRouteColors = [
 ] as const
 
 const EMPTY_ROUTE_CLIENTS: readonly RouteClient[] = []
+const EMPTY_ROAD_POLYLINES: Record<string, readonly PolylinePoint[]> = {}
 const HOME_DISPLAY_DATE = '2026-05-09'
+const ROUTE_DEFAULT_TRUCK_INDEX = 11
 const HOME_INITIAL_AVAILABILITY_BY_CAPACITY: Record<number, number> = {
   3: 2,
   6: 10,
@@ -138,8 +145,15 @@ export function HomePage({ activeView, onNavigate }: HomePageProps) {
   }
 
   return (
-    <section className="min-h-[calc(100vh-48px)] bg-[#fdf4ec] px-5 pb-16 pt-8 text-[#47392b] min-[1100px]:min-h-[calc(100vh-70px)] min-[1100px]:pt-12 sm:px-6">
-      <Container className="max-w-[1104px] px-0">
+    <section
+      className={cn(
+        'min-h-[calc(100vh-55px)] bg-[#fdf4ec] pb-16 text-[#47392b]',
+        activeView === 'ruta'
+          ? 'px-2 pt-[58px] sm:px-3'
+          : 'px-5 pt-8 sm:px-6 min-[1100px]:pt-12',
+      )}
+    >
+      <Container className={cn('px-0 sm:px-0 lg:px-0', activeView === 'ruta' ? 'max-w-[1168px]' : 'max-w-[1104px]')}>
       {activeView === 'organizacion' ? (
         <OrganizationView
           onNavigate={onNavigate}
@@ -339,7 +353,7 @@ function OrdersView({
           ))}
         </div>
         {warning ? (
-          <p className="max-w-[706px] text-center text-[13px] font-bold leading-5 text-[#c53030]">
+          <p className="mt-[65px] max-w-[706px] text-center text-[13px] font-bold leading-5 text-[#c53030]">
             {warning}
           </p>
         ) : null}
@@ -563,16 +577,13 @@ function RouteDetailView({
   const selectedTruck =
     plan?.assignedTrucks.find((truck) => truck.id === selectedTruckId) ?? plan?.assignedTrucks[0]
   const clients = selectedTruck?.clients ?? EMPTY_ROUTE_CLIENTS
-  const [selectedClientId, setSelectedClientId] = useState(clients[0]?.clientId ?? '')
-  const [showOriginalRoute, setShowOriginalRoute] = useState(true)
+  const [selectedClientId, setSelectedClientId] = useState('')
   const effectiveSelectedClientId = clients.some((client) => client.clientId === selectedClientId)
     ? selectedClientId
-    : clients[0]?.clientId ?? ''
-  const selectedClient =
-    clients.find((client) => client.clientId === effectiveSelectedClientId) ?? clients[0]
+    : ''
 
   const handleSelectClient = useCallback((clientId: string) => {
-    setSelectedClientId(clientId)
+    setSelectedClientId((currentClientId) => (currentClientId === clientId ? '' : clientId))
   }, [])
 
   const topProducts = useMemo(() => {
@@ -591,12 +602,14 @@ function RouteDetailView({
     return [...totals.values()].sort((a, b) => b.quantity - a.quantity).slice(0, 6)
   }, [selectedTruck])
 
-  const metricSources = useMemo(() => {
-    const totals = new Map<string, number>()
+  const rowsByClient = useMemo(() => {
+    const rows = new Map<string, PlanningLoadRow[]>()
     for (const row of selectedTruck?.masterRows ?? []) {
-      totals.set(row.metricSource, (totals.get(row.metricSource) ?? 0) + 1)
+      const clientRows = rows.get(row.clientId) ?? []
+      clientRows.push(row)
+      rows.set(row.clientId, clientRows)
     }
-    return [...totals.entries()].sort((a, b) => b[1] - a[1])
+    return rows
   }, [selectedTruck])
 
   const statusCounts = useMemo(() => {
@@ -613,83 +626,68 @@ function RouteDetailView({
     return <EmptyState title="Sin ruta" body="Calcula una organización y selecciona un camión asignado." />
   }
 
+  const selectedTruckName = routeTruckLabel(plan.assignedTrucks, selectedTruck)
+
   return (
-    <div className="space-y-[34px]" id="ruta">
-      <section className="flex flex-wrap items-end justify-between gap-5">
-        <div>
-          <p className="text-[11px] font-bold uppercase leading-none tracking-[0.18em] text-[#b8aa9c]">
-            Ruta
-          </p>
-          <h1 className="mt-4 max-w-4xl text-[28px] font-bold leading-[1.18] text-[#47392b] sm:text-[34px]">
-            {selectedTruck.label}: {selectedTruck.summary.clients} clientes optimizados.
-          </h1>
-          <p className="mt-4 max-w-3xl text-[15px] font-medium leading-6 text-[#806a54]">
-            Día {formatDate(plan.date)}. La ruta minimiza conducción, coste de kilómetros,
-            ventanas horarias, prioridad, logística inversa y acceso físico a la carga.
-          </p>
-        </div>
-        <label className="block min-w-64">
-          <span className="text-xs font-bold uppercase tracking-wide text-[#b8aa9c]">Camión</span>
+    <div className="route-screen" id="ruta">
+      <section className="route-hero-panel">
+        <div className="route-title-row">
+          <h1>Ruta para el {selectedTruckName}:</h1>
+          <label className="route-select-label">
+            <span className="sr-only">Camión</span>
           <select
-            className="mt-2 min-h-12 w-full rounded-[16px] bg-[#fdf9f6] px-4 text-sm font-bold text-[#47392b] outline-none transition focus:ring-2 focus:ring-[#c53030]/25"
+              className="route-truck-select"
             onChange={(event) => onSelectTruck(event.target.value)}
             value={selectedTruck.id}
           >
-            {plan.assignedTrucks.map((truck) => (
+              {plan.assignedTrucks.map((truck) => (
               <option key={truck.id} value={truck.id}>
-                {truck.label} · {truck.summary.clients} clientes
+                  {routeTruckLabel(plan.assignedTrucks, truck)}
               </option>
             ))}
           </select>
+            <ChevronDown aria-hidden="true" className="route-select-chevron" strokeWidth={2.4} />
         </label>
-      </section>
-
-      <section className="grid grid-cols-[minmax(0,1fr)] gap-8 xl:grid-cols-[minmax(0,0.92fr)_minmax(0,1.08fr)]">
-        <div className="min-w-0 space-y-6">
-          <div className="grid grid-cols-2 gap-5">
-            <Kpi label="Clientes" value={selectedTruck.summary.clients} />
-            <Kpi label="Líneas" value={selectedTruck.summary.lines} />
-            <Kpi label="Peso" value={formatKg(selectedTruck.summary.weightKg)} />
-            <Kpi label="Camión" value={selectedTruck.type.shortLabel} tone="accent" />
-          </div>
-
-          <div className="grid gap-5 sm:grid-cols-3">
-            <ScoreCard
-              label="Orden original"
-              primary={formatScore(selectedTruck.route.original.operationalScore)}
-              secondary={`${selectedTruck.route.original.distanceKm} km · ${formatMinutes(selectedTruck.route.original.totalMinutes)}`}
-            />
-            <ScoreCard
-              label="Hackemate"
-              primary={formatScore(selectedTruck.route.optimized.operationalScore)}
-              secondary={`${selectedTruck.route.optimized.distanceKm} km · ${formatMinutes(selectedTruck.route.optimized.totalMinutes)}`}
-              tone="success"
-            />
-            <ScoreCard
-              label="Mejora operativa"
-              primary={formatScore(selectedTruck.route.scoreImprovement)}
-              secondary={`${formatMinutes(selectedTruck.route.savingsMinutes)} · ${formatPercent(selectedTruck.route.scoreImprovementPercent)}`}
-              tone="highlight"
-            />
-          </div>
         </div>
 
-        <section className="min-w-0 overflow-hidden rounded-[18px] bg-[#fdf9f6]">
-          <div className="flex flex-wrap items-center justify-between gap-3 bg-[#f6e5d4] px-5 py-4">
-            <div>
-              <h2 className="text-base font-bold text-[#47392b]">Mapa de reparto</h2>
-              <p className="mt-1 text-sm font-medium text-[#806a54]">
-                Haversine x1.32 local · polilínea por secuencia optimizada
-              </p>
-            </div>
+        <div className="route-kpi-grid">
+          <RouteKpiCard icon={UsersRound} label="Clientes" value={selectedTruck.summary.clients} />
+          <RouteKpiCard icon={Package} label="Pedidos" value={selectedTruck.summary.deliveries} />
+          <RouteKpiCard
+            className="route-kpi-card-wide"
+            icon={Weight}
+            label="Peso"
+            value={formatKg(selectedTruck.summary.weightKg)}
+          />
+          <RouteKpiCard icon={Box} label="Volumen" value={formatM3(selectedTruck.summary.volumeM3)} />
+          <RouteKpiCard icon={Grid3X3} label="Palets" value={selectedTruck.capacityPallets} />
+          </div>
+
+        <div className="route-comparison-row">
+          <RouteComparisonCard
+            icon={ThumbsDown}
+              label="Orden original"
+            value={`${formatKmRounded(selectedTruck.route.original.distanceKm)} · ${formatMinutes(selectedTruck.route.original.totalMinutes)}`}
+            />
+          <RouteComparisonCard
+            icon={Award}
+              label="Hackemate"
+            value={`${formatKmRounded(selectedTruck.route.optimized.distanceKm)} · ${formatMinutes(selectedTruck.route.optimized.totalMinutes)}`}
+            variant="highlight"
+            />
+          </div>
+
+        <div className="route-map-heading">
+          <h2>Mapa del reparto:</h2>
             <button
-              className="rounded-full bg-[#fdf9f6] px-4 py-2 text-sm font-bold text-[#806a54] transition hover:bg-white focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#c53030] focus-visible:ring-offset-2 focus-visible:ring-offset-[#f6e5d4]"
-              onClick={() => setShowOriginalRoute((value) => !value)}
+            className="route-start-button"
               type="button"
             >
-              {showOriginalRoute ? 'Ocultar original' : 'Ver original'}
+            Iniciar ruta
             </button>
           </div>
+
+        <div className="route-map-frame">
           <RouteMap
             clients={clients}
             depot={planningDataset.depot}
@@ -698,103 +696,59 @@ function RouteDetailView({
             originalPolyline={selectedTruck.originalPolyline}
             routeKey={selectedTruck.id}
             selectedClientId={effectiveSelectedClientId}
-            showOriginalRoute={showOriginalRoute}
-          />
-        </section>
-      </section>
-
-      <section className="grid grid-cols-[minmax(0,1fr)] gap-8 xl:grid-cols-[minmax(0,1fr)_minmax(0,0.72fr)]">
-        <div className="min-w-0 overflow-hidden rounded-[18px] bg-[#fdf9f6]">
-          <div className="bg-[#f6e5d4] px-5 py-4">
-            <h2 className="text-base font-bold text-[#47392b]">Orden recomendado</h2>
-            <p className="mt-1 text-sm font-medium text-[#806a54]">
-              Primeras paradas cargadas cerca de la puerta trasera.
-            </p>
-          </div>
-          <RouteOrdersTable
-            clients={clients}
-            onSelectClient={handleSelectClient}
-            selectedClientId={effectiveSelectedClientId}
+            showOriginalRoute={false}
           />
         </div>
-
-        <aside className="min-w-0 space-y-6">
-          {selectedClient ? <SelectedClientPanel client={selectedClient} /> : null}
-
-          <div className="rounded-[18px] bg-[#fdf9f6] p-5">
-            <h2 className="text-base font-bold text-[#47392b]">Score operativo</h2>
-            <div className="mt-4 space-y-3">
-              <ScoreLine label="Score original" value={formatScore(selectedTruck.route.original.operationalScore)} />
-              <ScoreLine label="Score Hackemate" value={formatScore(selectedTruck.route.optimized.operationalScore)} />
-              <ScoreLine label="Mejora" value={formatScore(selectedTruck.route.scoreImprovement)} strong />
-              <ScoreLine label="Tiempo ahorrado" value={formatMinutes(selectedTruck.route.savingsMinutes)} />
-              <ScoreLine
-                label="Distancia"
-                value={`${selectedTruck.route.optimized.distanceKm} km (${decimalFormatter.format(selectedTruck.route.savingsKm)} km menos)`}
-              />
-              <ScoreLine label="Fin estimado" value={selectedTruck.route.optimized.finish} />
-              <ScoreLine
-                label="Penalización horarios"
-                value={`${decimalFormatter.format(selectedTruck.route.optimized.waitMinutes)} min espera · ${decimalFormatter.format(selectedTruck.route.optimized.lateMinutes)} min tarde`}
-              />
-              <ScoreLine
-                label="Prioridad/carga"
-                value={`${formatScore(selectedTruck.route.optimized.priorityPenalty)} / ${formatScore(selectedTruck.route.optimized.loadPenalty)}`}
-              />
-              <ScoreLine
-                label="Ventanas correctas"
-                value={`${statusCounts.ok ?? 0}/${selectedTruck.summary.clients}`}
-              />
-            </div>
-          </div>
-        </aside>
       </section>
 
-      <section className="grid grid-cols-[minmax(0,1fr)] gap-8">
-        <div className="min-w-0 rounded-[18px] bg-[#fdf9f6] p-5">
+      <section className="route-section route-deliveries-section">
+        <h2 className="route-section-title">Repartos:</h2>
+        <RouteOrdersList
+            clients={clients}
+            onSelectClient={handleSelectClient}
+          rowsByClient={rowsByClient}
+            selectedClientId={effectiveSelectedClientId}
+          />
+      </section>
+
+      <section className="route-section route-truck-section">
           <TruckLoadPlanner
             onSelectClient={handleSelectClient}
             plan={selectedTruck.loadPlan}
             selectedClientId={effectiveSelectedClientId}
             showFloorPlan
           />
-        </div>
+      </section>
 
-        <div className="min-w-0 rounded-[18px] bg-[#fdf9f6] p-5">
-          <h2 className="text-base font-bold text-[#47392b]">Tabla maestra resumida</h2>
-          <div className="mt-4 grid gap-3 sm:grid-cols-2">
-            <SummaryBlock label="Materiales agrupados" value={selectedTruck.masterRows.length} />
-            <SummaryBlock label="Entregas SAP" value={selectedTruck.summary.deliveries} />
-            <SummaryBlock label="Volumen" value={formatM3(selectedTruck.summary.volumeM3)} />
-            <SummaryBlock label="Peso" value={formatKg(selectedTruck.summary.weightKg)} />
-          </div>
-          <div className="mt-6 grid grid-cols-[minmax(0,1fr)] gap-6 md:grid-cols-[minmax(0,1fr)_minmax(0,1fr)]">
-            <div className="min-w-0">
-              <h3 className="text-sm font-bold text-[#47392b]">Top productos por unidades</h3>
-              <ul className="mt-3 space-y-2">
-                {topProducts.map((product) => (
-                  <li className="flex min-w-0 items-start justify-between gap-3 text-sm" key={`${product.material}-${product.product}`}>
-                    <span className="min-w-0">
-                      <span className="block truncate font-bold text-[#47392b]">{product.product}</span>
-                      <span className="text-xs font-medium text-[#a99583]">{product.material}</span>
-                    </span>
-                    <span className="shrink-0 font-medium text-[#806a54]">
-                      {decimalFormatter.format(product.quantity)} {product.unit}
-                    </span>
-                  </li>
-                ))}
-              </ul>
-            </div>
-            <div className="min-w-0">
-              <h3 className="text-sm font-bold text-[#47392b]">Calidad del cálculo</h3>
-              <ul className="mt-3 space-y-2">
-                {metricSources.map(([source, count]) => (
-                  <li className="flex min-w-0 items-center justify-between gap-3 text-sm" key={source}>
-                    <span className="min-w-0 truncate font-medium text-[#806a54]">{source}</span>
-                    <span className="font-bold text-[#47392b]">{count}</span>
-                  </li>
-                ))}
-              </ul>
+      <section className="route-section route-extras-section">
+        <h2 className="route-section-title">Extras:</h2>
+        <div className="route-extras-grid">
+          <RouteProductsCard products={topProducts} />
+
+          <div className="route-score-panel">
+            <h3>Score operativo</h3>
+            <div>
+            <ScoreLine label="Score original" value={formatScore(selectedTruck.route.original.operationalScore)} />
+            <ScoreLine label="Score Hackemate" value={formatScore(selectedTruck.route.optimized.operationalScore)} />
+            <ScoreLine label="Mejora" value={formatScore(selectedTruck.route.scoreImprovement)} strong />
+            <ScoreLine label="Tiempo ahorrado" value={formatMinutes(selectedTruck.route.savingsMinutes)} />
+            <ScoreLine
+              label="Distancia"
+              value={`${decimalFormatter.format(selectedTruck.route.optimized.distanceKm)} km (${decimalFormatter.format(selectedTruck.route.savingsKm)} km menos)`}
+            />
+            <ScoreLine label="Fin estimado" value={selectedTruck.route.optimized.finish} />
+            <ScoreLine
+              label="Penalización horarios"
+              value={`${decimalFormatter.format(selectedTruck.route.optimized.waitMinutes)} min espera - ${decimalFormatter.format(selectedTruck.route.optimized.lateMinutes)} min tarde`}
+            />
+            <ScoreLine
+              label="Prioridad/carga"
+              value={`${formatScore(selectedTruck.route.optimized.priorityPenalty)} / ${formatScore(selectedTruck.route.optimized.loadPenalty)}`}
+            />
+            <ScoreLine
+              label="Ventanas correctas"
+              value={`${statusCounts.ok ?? 0}/${selectedTruck.summary.clients}`}
+            />
             </div>
           </div>
         </div>
@@ -803,77 +757,100 @@ function RouteDetailView({
   )
 }
 
-function RouteOrdersTable({
+function RouteOrdersList({
   clients,
   onSelectClient,
+  rowsByClient,
   selectedClientId,
 }: {
   clients: readonly RouteClient[]
   onSelectClient: (clientId: string) => void
+  rowsByClient: ReadonlyMap<string, readonly PlanningLoadRow[]>
   selectedClientId: string
 }) {
   return (
-    <div className="overflow-x-auto">
-      <table className="min-w-full text-left text-sm">
-        <thead className="bg-[#f6e5d4] text-xs font-bold uppercase tracking-wide text-[#a99583]">
-          <tr>
-            <th className="px-5 py-3 font-medium">Stop</th>
-            <th className="px-5 py-3 font-medium">Cliente</th>
-            <th className="px-5 py-3 font-medium">Pedido</th>
-            <th className="px-5 py-3 font-medium">Prioridad</th>
-            <th className="px-5 py-3 font-medium">Carga</th>
-            <th className="px-5 py-3 font-medium">Horario</th>
-            <th className="px-5 py-3 font-medium">Zona</th>
-          </tr>
-        </thead>
-        <tbody className="divide-y divide-[#f1e5d9]">
-          {clients.map((client) => (
-            <tr
-              className={client.clientId === selectedClientId ? 'bg-[#f6e5d4]/75' : 'bg-[#fdf9f6]'}
-              key={client.clientId}
+    <div className="route-orders-card">
+      {clients.map((client) => {
+        const expanded = client.clientId === selectedClientId
+        return (
+          <article
+            className={cn('route-order-row', expanded && 'route-order-row-selected')}
+            key={client.clientId}
+          >
+            <button
+              className="route-order-summary"
+              onClick={() => onSelectClient(client.clientId)}
+              type="button"
             >
-              <td className="px-5 py-3 align-top font-bold text-[#47392b]">{client.optimizedSequence}</td>
-              <td className="px-5 py-3 align-top">
-                <button
-                  className="text-left font-bold text-[#47392b] transition hover:text-[#c53030] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#c53030] focus-visible:ring-offset-2"
-                  onClick={() => onSelectClient(client.clientId)}
-                  type="button"
-                >
-                  {client.name}
-                </button>
-                <p className="mt-1 max-w-64 text-xs font-medium leading-5 text-[#a99583]">
-                  {client.address}, {client.postalCode} {client.city}
-                </p>
-              </td>
-              <td className="px-5 py-3 align-top font-medium text-[#806a54]">
-                {client.lines} líneas · {client.productTypes.map(productLabel).join(', ')}
-              </td>
-              <td className="px-5 py-3 align-top">
-                <span className="rounded-[10px] bg-[#f6e5d4] px-2.5 py-1 text-xs font-bold text-[#806a54]">
-                  {client.priorityLabel}
-                </span>
-                <p className="mt-1 text-xs font-medium text-[#a99583]">
-                  {client.priorityReasons.slice(0, 2).join(', ')}
-                </p>
-              </td>
-              <td className="px-5 py-3 align-top font-medium text-[#806a54]">
-                {formatKg(client.weightKg)} · {decimalFormatter.format(client.pallets)} palets
-              </td>
-              <td className="px-5 py-3 align-top">
-                <span className="font-bold text-[#47392b]">{client.arrival}</span>
-                <p className="mt-1 text-xs font-medium text-[#a99583]">
-                  {client.window.label} · {statusLabels[client.windowStatus] ?? client.windowStatus}
-                </p>
-              </td>
-              <td className="px-5 py-3 align-top">
-                <span className="rounded-[10px] bg-[#f6e5d4] px-2.5 py-1 text-xs font-bold text-[#806a54]">
-                  Z{client.loadZone}
-                </span>
-              </td>
-            </tr>
-          ))}
-        </tbody>
-      </table>
+              <span className="route-order-number">{client.optimizedSequence}.</span>
+              <span className="route-order-site">
+                <strong>{client.name}</strong>
+                <small>
+                  {client.address}
+                  <br />
+                  {client.postalCode} {client.city}
+                </small>
+              </span>
+              <span className="route-order-pedidos">{client.deliveries.length} pedidos</span>
+              <span className="route-order-weight">
+                {formatKg(client.weightKg)}
+                <small>{formatPalletUnit(client.pallets)}</small>
+              </span>
+              <span className="route-order-priority">
+                <strong>{client.priorityLabel}</strong>
+                <small>{client.priorityReasons[0] ?? 'Sin restricción'}</small>
+              </span>
+              <span className="route-order-time">
+                <strong>{client.arrival}</strong>
+                <small>
+                  {client.window.label} - {statusLabels[client.windowStatus] ?? client.windowStatus}
+                </small>
+              </span>
+              {expanded ? (
+                <ChevronUp aria-hidden="true" className="route-order-chevron" strokeWidth={2.2} />
+              ) : (
+                <ChevronDown aria-hidden="true" className="route-order-chevron" strokeWidth={2.2} />
+              )}
+            </button>
+            {expanded ? (
+              <RouteOrderExpanded client={client} rows={rowsByClient.get(client.clientId) ?? []} />
+            ) : null}
+          </article>
+        )
+      })}
+    </div>
+  )
+}
+
+function RouteOrderExpanded({
+  client,
+  rows,
+}: {
+  client: RouteClient
+  rows: readonly PlanningLoadRow[]
+}) {
+  const visibleRows = rows.slice(0, 8)
+  const splitIndex = Math.ceil(visibleRows.length / 2)
+  const columns = [visibleRows.slice(0, splitIndex), visibleRows.slice(splitIndex)]
+
+  return (
+    <div className="route-order-expanded-content">
+      <div className="route-order-expanded-meta">
+        <span>ZONA DE CARGA: Z{client.loadZone}</span>
+        <span>DESCARGA: {formatMinutes(client.serviceMinutes)}</span>
+      </div>
+      <div className="route-order-products">
+        {columns.map((column, index) => (
+          <ul key={index}>
+            {column.map((row) => (
+              <li key={row.lineId}>
+                <strong>{decimalFormatter.format(row.quantity)} uds de [{trimProductName(row.product)}]</strong>
+                <span>PALET X</span>
+              </li>
+            ))}
+          </ul>
+        ))}
+      </div>
     </div>
   )
 }
@@ -937,30 +914,48 @@ function Kpi({
   )
 }
 
-function ScoreCard({
+function RouteKpiCard({
+  className,
+  icon: Icon,
   label,
-  primary,
-  secondary,
-  tone = 'default',
+  value,
 }: {
+  className?: string
+  icon: LucideIcon
   label: string
-  primary: string
-  secondary: string
-  tone?: 'default' | 'success' | 'highlight'
+  value: string | number
 }) {
-  const tones = {
-    default: 'bg-[#fdf9f6]',
-    success: 'bg-[#f6e5d4]',
-    highlight: 'bg-[#c53030]',
-  }
-  const isHighlight = tone === 'highlight'
   return (
-    <div className={`rounded-[13px] p-4 ${tones[tone]}`}>
-      <p className={cn('text-[11px] font-bold uppercase leading-none tracking-wide', isHighlight ? 'text-white/75' : 'text-[#b8aa9c]')}>
+    <div className={cn('route-kpi-card', className)}>
+      <Icon aria-hidden="true" className="route-kpi-icon" strokeWidth={2.1} />
+      <div>
+        <p>{label}</p>
+        <strong>{value}</strong>
+      </div>
+    </div>
+  )
+}
+
+function RouteComparisonCard({
+  icon: Icon,
+  label,
+  value,
+  variant = 'default',
+}: {
+  icon: LucideIcon
+  label: string
+  value: string
+  variant?: 'default' | 'highlight'
+}) {
+  return (
+    <div className={cn('route-comparison-card', variant === 'highlight' && 'route-comparison-card-highlight')}>
+      <Icon aria-hidden="true" className="route-comparison-icon" strokeWidth={2.3} />
+      <div>
+        <p>
         {label}
       </p>
-      <p className={cn('mt-3 text-[24px] font-bold leading-none', isHighlight ? 'text-white' : 'text-[#806a54]')}>{primary}</p>
-      <p className={cn('mt-2 text-sm font-medium', isHighlight ? 'text-white/80' : 'text-[#806a54]')}>{secondary}</p>
+        <strong>{value}</strong>
+      </div>
     </div>
   )
 }
@@ -976,62 +971,34 @@ function MiniMetric({ label, value }: { label: string; value: string | number })
 
 function ScoreLine({ label, value, strong = false }: { label: string; value: string; strong?: boolean }) {
   return (
-    <div className="flex items-center justify-between gap-4 border-b border-[#f1e5d9] pb-2 last:border-b-0 last:pb-0">
-      <span className="text-sm font-medium text-[#806a54]">{label}</span>
-      <span className={strong ? 'text-sm font-bold text-[#c53030]' : 'text-sm font-bold text-[#47392b]'}>
-        {value}
-      </span>
+    <div className="route-score-line">
+      <span>{label}</span>
+      <strong className={strong ? 'route-score-line-strong' : undefined}>{value}</strong>
     </div>
   )
 }
 
-function SummaryBlock({ label, value }: { label: string; value: string | number }) {
+function RouteProductsCard({
+  products,
+}: {
+  products: readonly { material: string; product: string; quantity: number; unit: string }[]
+}) {
   return (
-    <div className="rounded-[13px] bg-[#f6e5d4] p-3">
-      <p className="text-[11px] font-bold uppercase leading-none tracking-wide text-[#b8aa9c]">{label}</p>
-      <p className="mt-2 text-lg font-bold text-[#806a54]">{value}</p>
-    </div>
-  )
-}
-
-function SelectedClientPanel({ client }: { client: RouteClient }) {
-  return (
-    <div className="rounded-[18px] bg-[#fdf9f6] p-5">
-      <div className="flex items-start justify-between gap-4">
-        <div>
-          <p className="text-[11px] font-bold uppercase leading-none tracking-wide text-[#b8aa9c]">Cliente seleccionado</p>
-          <h2 className="mt-2 text-lg font-bold text-[#47392b]">{client.name}</h2>
-        </div>
-        <span className="rounded-[10px] bg-[#c53030] px-2.5 py-1 text-xs font-bold text-white">
-          Stop {client.optimizedSequence}
-        </span>
-      </div>
-      <p className="mt-3 text-sm font-medium leading-6 text-[#806a54]">
-        {client.address}, {client.postalCode} {client.city}
-      </p>
-      <div className="mt-4 grid grid-cols-2 gap-3 text-sm">
-        <SummaryBlock label="Llegada" value={client.arrival} />
-        <SummaryBlock label="Zona carga" value={`Z${client.loadZone}`} />
-        <SummaryBlock label="Descarga" value={formatMinutes(client.serviceMinutes)} />
-        <SummaryBlock label="Prioridad" value={client.priorityLabel} />
-      </div>
-      <div className="mt-4 flex flex-wrap gap-2">
-        {client.productTypes.map((type) => (
-          <span className="rounded-[10px] bg-[#f6e5d4] px-2.5 py-1 text-xs font-bold text-[#806a54]" key={type}>
-            {productLabel(type)}
-          </span>
+    <div className="route-products-card">
+      <h3>Lista de todos los productos</h3>
+      <ul>
+        {products.map((product) => (
+          <li key={`${product.material}-${product.product}`}>
+            <span>
+              <strong>{trimProductName(product.product)}</strong>
+              <small>{product.material}</small>
+            </span>
+            <em>
+              {decimalFormatter.format(product.quantity)} {product.unit}
+            </em>
+          </li>
         ))}
-        {client.hasReturnables ? (
-          <span className="rounded-[10px] bg-[#f7d9cf] px-2.5 py-1 text-xs font-bold text-[#9b2c2c]">
-            Retorno {decimalFormatter.format(client.returnableUnits)}
-          </span>
-        ) : null}
-      </div>
-      <p className="mt-4 text-xs font-medium text-[#a99583]">
-        {formatKg(client.weightKg)} · {decimalFormatter.format(client.pallets)} palets · dificultad
-        carga {decimalFormatter.format(client.loadDifficulty)}. Coordenadas: {client.geocodeSource}.
-        Orden original: {client.currentSequence}.
-      </p>
+      </ul>
     </div>
   )
 }
@@ -1055,10 +1022,50 @@ function OrganizationRoutesMap({
   const mapRef = useRef<L.Map | null>(null)
   const layerRef = useRef<L.LayerGroup | null>(null)
   const fittedRef = useRef(false)
+  const roadPolylineBatchKey = useMemo(
+    () => `${routeKey}|${trucks.map((truck) => `${truck.id}:${polylineSignature(truck.optimizedPolyline)}`).join('|')}`,
+    [routeKey, trucks],
+  )
+  const [roadPolylineState, setRoadPolylineState] = useState<{
+    key: string
+    polylines: Record<string, readonly PolylinePoint[]>
+  }>({ key: '', polylines: EMPTY_ROAD_POLYLINES })
+  const roadPolylineByTruck =
+    showRoutes && roadPolylineState.key === roadPolylineBatchKey
+      ? roadPolylineState.polylines
+      : EMPTY_ROAD_POLYLINES
 
   useEffect(() => {
     fittedRef.current = false
   }, [routeKey])
+
+  useEffect(() => {
+    let cancelled = false
+
+    if (!showRoutes) {
+      return () => {
+        cancelled = true
+      }
+    }
+
+    void Promise.all(
+      trucks.map(async (truck) => {
+        const polyline = await getRoadRoutePolyline(truck.optimizedPolyline)
+        return [truck.id, polyline] as const
+      }),
+    ).then((entries) => {
+      if (!cancelled) {
+        setRoadPolylineState({
+          key: roadPolylineBatchKey,
+          polylines: Object.fromEntries(entries),
+        })
+      }
+    })
+
+    return () => {
+      cancelled = true
+    }
+  }, [roadPolylineBatchKey, showRoutes, trucks])
 
   useEffect(() => {
     if (!containerRef.current || mapRef.current) {
@@ -1110,7 +1117,8 @@ function OrganizationRoutesMap({
     for (const [truckIndex, truck] of trucks.entries()) {
       const color = truckRouteColors[truckIndex % truckRouteColors.length]
       const isSelected = truck.id === selectedTruckId
-      const line = truck.optimizedPolyline.map((point) => [point.lat, point.lng] as [number, number])
+      const routePolyline = roadPolylineByTruck[truck.id] ?? truck.optimizedPolyline
+      const line = routePolyline.map((point) => [point.lat, point.lng] as [number, number])
 
       if (showRoutes && line.length > 1) {
         L.polyline(line, {
@@ -1155,6 +1163,7 @@ function OrganizationRoutesMap({
     depot.lng,
     depot.name,
     onSelectTruck,
+    roadPolylineByTruck,
     selectedTruckId,
     showRoutes,
     trucks,
@@ -1218,10 +1227,44 @@ function RouteMap({
   const mapRef = useRef<L.Map | null>(null)
   const layerRef = useRef<L.LayerGroup | null>(null)
   const fittedRef = useRef(false)
+  const roadRouteKey = useMemo(
+    () =>
+      `${routeKey}|${polylineSignature(optimizedPolyline)}|${
+        showOriginalRoute ? polylineSignature(originalPolyline) : ''
+      }`,
+    [optimizedPolyline, originalPolyline, routeKey, showOriginalRoute],
+  )
+  const [roadRouteState, setRoadRouteState] = useState<{
+    key: string
+    optimizedPolyline: readonly PolylinePoint[] | null
+    originalPolyline: readonly PolylinePoint[] | null
+  }>({ key: '', optimizedPolyline: null, originalPolyline: null })
+  const hasCurrentRoadRoute = roadRouteState.key === roadRouteKey
 
   useEffect(() => {
     fittedRef.current = false
   }, [routeKey])
+
+  useEffect(() => {
+    let cancelled = false
+
+    void Promise.all([
+      getRoadRoutePolyline(optimizedPolyline),
+      showOriginalRoute ? getRoadRoutePolyline(originalPolyline) : Promise.resolve(null),
+    ]).then(([roadOptimizedPolyline, roadOriginalPolyline]) => {
+      if (!cancelled) {
+        setRoadRouteState({
+          key: roadRouteKey,
+          optimizedPolyline: roadOptimizedPolyline,
+          originalPolyline: roadOriginalPolyline,
+        })
+      }
+    })
+
+    return () => {
+      cancelled = true
+    }
+  }, [optimizedPolyline, originalPolyline, roadRouteKey, showOriginalRoute])
 
   useEffect(() => {
     if (!containerRef.current || mapRef.current) {
@@ -1229,12 +1272,13 @@ function RouteMap({
     }
 
     const map = L.map(containerRef.current, {
-      attributionControl: true,
+      attributionControl: false,
       scrollWheelZoom: false,
       zoomControl: false,
     }).setView([depot.lat, depot.lng], 10)
 
     L.control.zoom({ position: 'bottomright' }).addTo(map)
+
     L.tileLayer('https://{s}.basemaps.cartocdn.com/light_all/{z}/{x}/{y}{r}.png', {
       attribution: '&copy; OpenStreetMap contributors &copy; CARTO',
       className: 'route-map-tiles',
@@ -1259,31 +1303,39 @@ function RouteMap({
     const layer = L.layerGroup().addTo(map)
     layerRef.current = layer
 
-    const optimizedLine = optimizedPolyline.map((point) => [point.lat, point.lng] as [number, number])
-    const originalLine = originalPolyline.map((point) => [point.lat, point.lng] as [number, number])
+    const optimizedRoutePolyline =
+      hasCurrentRoadRoute && roadRouteState.optimizedPolyline
+        ? roadRouteState.optimizedPolyline
+        : optimizedPolyline
+    const originalRoutePolyline =
+      hasCurrentRoadRoute && roadRouteState.originalPolyline
+        ? roadRouteState.originalPolyline
+        : originalPolyline
+    const optimizedLine = optimizedRoutePolyline.map((point) => [point.lat, point.lng] as [number, number])
+    const originalLine = originalRoutePolyline.map((point) => [point.lat, point.lng] as [number, number])
 
     if (showOriginalRoute && originalLine.length > 1) {
       L.polyline(originalLine, {
         color: '#6B6B6B',
         dashArray: '6 8',
-        opacity: 0.6,
+        opacity: 0.42,
         weight: 2,
       }).addTo(layer)
     }
 
     if (optimizedLine.length > 1) {
       L.polyline(optimizedLine, {
-        color: '#C53030',
-        opacity: 0.9,
-        weight: 4,
+        color: '#D0312D',
+        opacity: 0.92,
+        weight: 5,
       }).addTo(layer)
     }
 
     L.circleMarker([depot.lat, depot.lng], {
       color: '#1A1A1A',
       fillColor: '#1A1A1A',
-      fillOpacity: 0.9,
-      radius: 7,
+      fillOpacity: 0.94,
+      radius: 8,
       weight: 2,
     })
       .addTo(layer)
@@ -1292,11 +1344,11 @@ function RouteMap({
     for (const client of clients) {
       const selected = client.clientId === selectedClientId
       const marker = L.circleMarker([client.lat, client.lng], {
-        color: selected ? '#822727' : '#C53030',
-        fillColor: selected ? '#C53030' : '#E8DDD0',
-        fillOpacity: selected ? 0.95 : 0.85,
-        radius: selected ? 8 : 5,
-        weight: selected ? 2 : 1.5,
+        color: '#D0312D',
+        fillColor: selected ? '#D0312D' : '#FDF4EC',
+        fillOpacity: selected ? 0.92 : 0.96,
+        radius: selected ? 9 : 6,
+        weight: selected ? 2 : 2.5,
       }).addTo(layer)
 
       marker.bindTooltip(`${client.optimizedSequence}. ${client.name}`, {
@@ -1311,7 +1363,7 @@ function RouteMap({
         [depot.lat, depot.lng],
         ...clients.map((client) => [client.lat, client.lng] as [number, number]),
       ])
-      map.fitBounds(bounds, { padding: [28, 28] })
+      map.fitBounds(bounds, { padding: [54, 54] })
       fittedRef.current = true
     }
 
@@ -1323,30 +1375,24 @@ function RouteMap({
     depot.lat,
     depot.lng,
     depot.name,
+    hasCurrentRoadRoute,
     optimizedPolyline,
     originalPolyline,
+    roadRouteState,
     selectedClientId,
     showOriginalRoute,
     onSelectClient,
   ])
 
   return (
-    <div className="relative h-[430px] bg-[#f6e5d4]">
+    <div className="route-map-canvas">
       <div className="h-full w-full" ref={containerRef} />
-      <div className="pointer-events-none absolute left-3 top-3 rounded-[13px] bg-[#fdf9f6]/95 px-3 py-2 text-xs font-bold text-[#47392b]">
-        <div className="flex items-center gap-2">
-          <span className="h-0.5 w-8 rounded bg-[#c53030]" />
-          Hackemate
-        </div>
-        {showOriginalRoute ? (
-          <div className="mt-1.5 flex items-center gap-2">
-            <span className="h-px w-8 border-t border-dashed border-[#806a54]" />
-            Original
-          </div>
-        ) : null}
-      </div>
     </div>
   )
+}
+
+function polylineSignature(polyline: readonly PolylinePoint[]) {
+  return polyline.map((point) => `${point.lng.toFixed(6)},${point.lat.toFixed(6)}`).join(';')
 }
 
 function EmptyState({ title, body }: { title: string; body: string }) {
@@ -1364,7 +1410,7 @@ function getEffectiveSelectedTruckId(plan: DistributionPlan | null, selectedTruc
   }
   return plan.trucks.some((truck) => truck.id === selectedTruckId)
     ? selectedTruckId
-    : plan.assignedTrucks[0]?.id ?? plan.trucks[0]?.id ?? ''
+    : plan.assignedTrucks[ROUTE_DEFAULT_TRUCK_INDEX]?.id ?? plan.assignedTrucks[0]?.id ?? plan.trucks[0]?.id ?? ''
 }
 
 function getHomeInitialAvailability(truckTypes: readonly TruckType[]): TruckAvailability {
@@ -1406,6 +1452,15 @@ function productLabel(type: string) {
   return typeLabels[type] ?? type
 }
 
+function routeTruckLabel(trucks: readonly PlannedTruck[], truck: PlannedTruck) {
+  const routeNumber = trucks.findIndex((item) => item.id === truck.id) + 1
+  return routeNumber > 0 ? `Camión ${routeNumber}` : truck.label
+}
+
+function trimProductName(product: string) {
+  return product.length > 46 ? `${product.slice(0, 43)}...` : product
+}
+
 function formatKg(value: number) {
   return `${numberFormatter.format(Math.round(value))} kg`
 }
@@ -1418,8 +1473,13 @@ function formatOrderCount(value: number) {
   return numberFormatter.format(Math.floor(value / 100) * 100)
 }
 
-function formatPercent(value: number) {
-  return `${decimalFormatter.format(value)} %`
+function formatPalletUnit(value: number) {
+  const label = Math.abs(value - 1) < 0.05 ? 'palet' : 'palets'
+  return `${decimalFormatter.format(value)} ${label}`
+}
+
+function formatKmRounded(value: number) {
+  return `${numberFormatter.format(Math.round(value))} km`
 }
 
 function formatMinutes(value: number) {
