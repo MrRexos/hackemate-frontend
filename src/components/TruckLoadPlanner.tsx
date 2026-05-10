@@ -33,6 +33,35 @@ type BoxDividerLayout = {
   rows: number
 }
 
+type DimensionProfile = {
+  lengthCm: number
+  widthCm: number
+  heightCm: number
+  heightToBaseRatio: number
+  widthDepthRatio: number
+}
+
+type SizedVisualUnit = {
+  unit: VisualUnit
+  size: UnitSize
+}
+
+type PlacedVisualUnit = SizedVisualUnit & {
+  baseY: number
+  x: number
+  z: number
+}
+
+type LoadStack = {
+  depth: number
+  height: number
+  productType: string
+  stackKey: string
+  width: number
+  x: number
+  z: number
+}
+
 const numberFormatter = new Intl.NumberFormat('es-ES')
 const decimalFormatter = new Intl.NumberFormat('es-ES', { maximumFractionDigits: 1 })
 const TOP_DOWN_SLOT_PITCH = 1.54
@@ -40,9 +69,14 @@ const TOP_DOWN_LANE_PITCH = 0.94
 const TOP_DOWN_LENGTH_PADDING = 1.32
 const TOP_DOWN_WIDTH_PADDING = 0.72
 const TOP_DOWN_CANVAS_HEIGHT_PX = 220
-const PALLET_CELL_MAX_WIDTH = 0.255
-const PALLET_CELL_MAX_DEPTH = 0.225
-const BOX_VERTICAL_RATIO_THRESHOLD = 1.35
+const PALLET_LOAD_WIDTH = 1.12
+const PALLET_LOAD_DEPTH = 0.72
+const PALLET_LOAD_AREA_M2 = 1.2 * 0.8
+const PALLET_LOAD_BASE_Y = 0.1
+const PALLET_LOAD_GAP = 0.018
+const PALLET_MAX_STACK_HEIGHT = 0.88
+const PALLET_MAX_UNIT_WIDTH = 0.46
+const PALLET_MAX_UNIT_DEPTH = 0.36
 
 export function TruckLoadPlanner({
   detailMode = 'clients',
@@ -730,27 +764,15 @@ function createPalletSceneContent(
   const group = new THREE.Group()
   group.add(createPalletBase())
 
-  const units = expandVisualUnits(pallet.pieces)
-  const cellHeights = Array.from({ length: 12 }, () => 0)
-  const cellPositions = buildCellPositions()
-  const sortedUnits = units.sort((a, b) => {
-    const ruleA = materialRuleFor(a.productType)
-    const ruleB = materialRuleFor(b.productType)
-    return ruleA.stackRank - ruleB.stackRank || a.stop - b.stop
-  })
+  const placedUnits = packVisualUnits(expandVisualUnits(pallet.pieces))
 
-  for (const unit of sortedUnits) {
-    const cellIndex = chooseCell(cellHeights)
-    const position = cellPositions[cellIndex]
-    const size = unitSize(unit)
-    const baseY = 0.1 + cellHeights[cellIndex]
+  for (const { baseY, size, unit, x, z } of placedUnits) {
     const mesh = createLoadMesh(unit, size, {
       dimmed: Boolean(
         options.dimmed || (options.selectedClientId && unit.clientId !== options.selectedClientId),
       ),
     })
-    mesh.position.set(position.x, baseY + size.height / 2, position.z)
-    cellHeights[cellIndex] += size.height + 0.014
+    mesh.position.set(x, baseY + size.height / 2, z)
     group.add(mesh)
   }
 
@@ -1008,7 +1030,9 @@ function tagPalletObjects(group: THREE.Object3D, palletId: string) {
 function expandVisualUnits(pieces: readonly LoadPiece[]) {
   const units: VisualUnit[] = []
   for (const piece of pieces) {
-    const count = Math.min(6, Math.max(1, Math.ceil(piece.palletShare / 0.13)))
+    const quantityCount = Math.round(Math.max(0, piece.quantity))
+    const countByQuantity = quantityCount <= 8 ? quantityCount : Math.ceil(Math.sqrt(quantityCount))
+    const count = Math.min(8, Math.max(1, Math.ceil(piece.palletShare / 0.12), countByQuantity))
     for (let index = 0; index < count; index += 1) {
       const visualRatio = 1 / count
       units.push({
@@ -1021,92 +1045,201 @@ function expandVisualUnits(pieces: readonly LoadPiece[]) {
       })
     }
   }
-  return units.slice(0, 42)
+  return units.slice(0, 48)
 }
 
-function buildCellPositions() {
-  const positions: { x: number; z: number }[] = []
-  for (let zIndex = 0; zIndex < 3; zIndex += 1) {
-    for (let xIndex = 0; xIndex < 4; xIndex += 1) {
-      positions.push({
-        x: -0.45 + xIndex * 0.3,
-        z: 0.27 - zIndex * 0.27,
+function packVisualUnits(units: readonly VisualUnit[]): PlacedVisualUnit[] {
+  const sizedUnits = units
+    .map((unit) => ({
+      unit,
+      size: unitSize(unit),
+    }))
+    .sort(compareSizedUnits)
+  const placedUnits: PlacedVisualUnit[] = []
+  const stacks: LoadStack[] = []
+  const halfWidth = PALLET_LOAD_WIDTH / 2
+  const halfDepth = PALLET_LOAD_DEPTH / 2
+  let cursorX = -halfWidth
+  let cursorZ = -halfDepth
+  let shelfDepth = 0
+
+  const placeOnFloor = (item: SizedVisualUnit) => {
+    if (cursorX + item.size.width > halfWidth + 0.001) {
+      cursorX = -halfWidth
+      cursorZ += shelfDepth + PALLET_LOAD_GAP
+      shelfDepth = 0
+    }
+
+    if (cursorZ + item.size.depth > halfDepth + 0.001) {
+      return null
+    }
+
+    const x = cursorX + item.size.width / 2
+    const z = cursorZ + item.size.depth / 2
+    cursorX += item.size.width + PALLET_LOAD_GAP
+    shelfDepth = Math.max(shelfDepth, item.size.depth)
+    return { baseY: PALLET_LOAD_BASE_Y, x, z }
+  }
+
+  for (const item of sizedUnits) {
+    const floorPlacement = placeOnFloor(item)
+    const stack = floorPlacement ? null : findStackForUnit(stacks, item)
+    const placement = floorPlacement ?? (
+      stack
+        ? {
+            baseY: PALLET_LOAD_BASE_Y + stack.height + PALLET_LOAD_GAP,
+            x: stack.x,
+            z: stack.z,
+          }
+        : {
+            baseY: PALLET_LOAD_BASE_Y,
+            x: 0,
+            z: 0,
+          }
+    )
+
+    placedUnits.push({
+      ...item,
+      ...placement,
+    })
+
+    if (stack) {
+      stack.height += item.size.height + PALLET_LOAD_GAP
+      stack.width = Math.max(stack.width, item.size.width)
+      stack.depth = Math.max(stack.depth, item.size.depth)
+    } else {
+      stacks.push({
+        depth: item.size.depth,
+        height: item.size.height,
+        productType: item.unit.productType,
+        stackKey: stackKeyFor(item.unit),
+        width: item.size.width,
+        x: placement.x,
+        z: placement.z,
       })
     }
   }
-  return positions
+
+  return placedUnits
 }
 
-function chooseCell(cellHeights: readonly number[]) {
-  let bestIndex = 0
-  let bestHeight = cellHeights[0]
-  for (let index = 1; index < cellHeights.length; index += 1) {
-    if (cellHeights[index] < bestHeight) {
-      bestHeight = cellHeights[index]
-      bestIndex = index
-    }
+function compareSizedUnits(a: SizedVisualUnit, b: SizedVisualUnit) {
+  const ruleA = materialRuleFor(a.unit.productType)
+  const ruleB = materialRuleFor(b.unit.productType)
+  return (
+    ruleA.stackRank - ruleB.stackRank ||
+    b.unit.weightKg - a.unit.weightKg ||
+    b.unit.visualShare - a.unit.visualShare ||
+    b.size.width * b.size.depth - a.size.width * a.size.depth ||
+    a.unit.stop - b.unit.stop
+  )
+}
+
+function findStackForUnit(stacks: readonly LoadStack[], item: SizedVisualUnit) {
+  const exactKey = stackKeyFor(item.unit)
+  const compatible = stacks
+    .filter((stack) => canStackOn(stack, item) && stack.stackKey === exactKey)
+    .sort((a, b) => a.height - b.height)
+
+  if (compatible[0]) {
+    return compatible[0]
   }
-  return bestIndex
+
+  return stacks
+    .filter((stack) => canStackOn(stack, item) && stack.productType === item.unit.productType)
+    .sort((a, b) => a.height - b.height)[0] ?? null
+}
+
+function canStackOn(stack: LoadStack, item: SizedVisualUnit) {
+  return (
+    stack.height + item.size.height + PALLET_LOAD_GAP <= PALLET_MAX_STACK_HEIGHT &&
+    item.size.width <= stack.width * 1.18 &&
+    item.size.depth <= stack.depth * 1.18
+  )
+}
+
+function stackKeyFor(unit: VisualUnit) {
+  return `${unit.productType}:${unit.materialCodes[0] ?? unit.products[0] ?? 'generico'}`
 }
 
 function unitSize(unit: VisualUnit) {
-  const share = clamp(unit.visualShare, 0.018, 0.22)
-  const scale = Math.sqrt(share / 0.1)
+  const profile = dimensionProfileFor(unit)
+  const targetArea = targetFootprintArea(unit.visualShare)
 
   if (unit.shape === 'cylinder') {
-    const maxRadius = Math.min(PALLET_CELL_MAX_WIDTH, PALLET_CELL_MAX_DEPTH) / 2
-    const radius = clamp(scale * (unit.productType === 'barril' ? 0.105 : 0.075), 0.055, maxRadius)
+    const diameterCm = Math.max(profile.lengthCm, profile.widthCm, 1)
+    const diameter = clamp(
+      Math.sqrt((targetArea * 4) / Math.PI),
+      0.09,
+      Math.min(PALLET_MAX_UNIT_WIDTH, PALLET_MAX_UNIT_DEPTH),
+    )
     return {
-      width: radius * 2,
-      depth: radius * 2,
-      height: clamp(0.18 + share * 1.15, 0.16, 0.46),
+      width: diameter,
+      depth: diameter,
+      height: clamp(diameter * (profile.heightCm / diameterCm), 0.09, PALLET_MAX_STACK_HEIGHT),
     }
   }
 
-  const profile = boxDimensionProfile(unit)
-  const ratioScale = Math.sqrt(profile?.widthDepthRatio ?? 1)
-  const width = clamp((0.18 + scale * 0.13) * ratioScale, 0.16, PALLET_CELL_MAX_WIDTH)
-  const depth = clamp((0.14 + scale * 0.11) / ratioScale, 0.13, PALLET_CELL_MAX_DEPTH)
-  const naturalHeight = clamp(
-    0.1 + share * (unit.shape === 'crate' ? 0.58 : 0.48),
-    0.11,
-    unit.shape === 'crate' ? 0.24 : 0.22,
-  )
-  const heightToBaseRatio = profile?.heightToBaseRatio ?? 1
-  const isVerticalProduct = heightToBaseRatio > BOX_VERTICAL_RATIO_THRESHOLD
-  const height = isVerticalProduct
-    ? clamp(
-        Math.max(naturalHeight, Math.max(width, depth) * clamp(heightToBaseRatio, BOX_VERTICAL_RATIO_THRESHOLD, 1.7)),
-        0.16,
-        unit.shape === 'crate' ? 0.36 : 0.38,
-      )
-    : Math.min(naturalHeight, Math.min(width, depth) * 0.82)
+  const size = boxSizeFromProfile(profile, targetArea)
 
   return {
-    width,
-    depth,
-    height,
+    width: size.width,
+    depth: size.depth,
+    height: size.height,
   }
 }
 
-function boxDimensionProfile(unit: VisualUnit) {
-  if (
-    !unit.dimensionSource?.includes('directas') ||
-    !unit.lengthCm ||
-    !unit.widthCm ||
-    !unit.heightCm
-  ) {
-    return null
-  }
+function targetFootprintArea(visualShare: number) {
+  const share = clamp(visualShare, 0.008, 0.22)
+  return clamp(PALLET_LOAD_AREA_M2 * share * 0.72, 0.006, 0.14)
+}
 
-  const baseMax = Math.max(unit.lengthCm, unit.widthCm)
+function boxSizeFromProfile(profile: DimensionProfile, targetArea: number): UnitSize {
+  const widthDepthRatio = clamp(profile.widthDepthRatio, 0.22, 4.2)
+  let width = Math.sqrt(targetArea * widthDepthRatio)
+  let depth = targetArea / Math.max(width, 0.001)
+  const maxWidthScale = Math.min(1, PALLET_MAX_UNIT_WIDTH / Math.max(width, 0.001))
+  const maxDepthScale = Math.min(1, PALLET_MAX_UNIT_DEPTH / Math.max(depth, 0.001))
+  const scaleDown = Math.min(maxWidthScale, maxDepthScale)
+  width *= scaleDown
+  depth *= scaleDown
+  width = clamp(width, 0.065, PALLET_MAX_UNIT_WIDTH)
+  depth = clamp(depth, 0.055, PALLET_MAX_UNIT_DEPTH)
+
+  const lengthM = Math.max(profile.lengthCm / 100, 0.01)
+  const widthM = Math.max(profile.widthCm / 100, 0.01)
+  const physicalScale = Math.min(width / lengthM, depth / widthM)
+  const baseMax = Math.max(width, depth)
+  const vertical = profile.heightToBaseRatio > 1.02
+  const maxHeight = vertical ? PALLET_MAX_STACK_HEIGHT : 0.38
+  const minHeight = vertical ? Math.min(PALLET_MAX_STACK_HEIGHT, baseMax * 1.04) : 0.045
+  const height = clamp((profile.heightCm / 100) * physicalScale, minHeight, maxHeight)
+
+  return { width, depth, height }
+}
+
+function dimensionProfileFor(unit: VisualUnit): DimensionProfile {
+  const lengthCm = Number(unit.lengthCm) > 0 ? Number(unit.lengthCm) : 30
+  const widthCm = Number(unit.widthCm) > 0 ? Number(unit.widthCm) : 22
+  const heightCm = Number(unit.heightCm) > 0 ? Number(unit.heightCm) : 18
+
+  const baseMax = Math.max(lengthCm, widthCm)
   if (baseMax <= 0) {
-    return null
+    return {
+      lengthCm: 30,
+      widthCm: 22,
+      heightCm: 18,
+      heightToBaseRatio: 0.6,
+      widthDepthRatio: 30 / 22,
+    }
   }
 
   return {
-    heightToBaseRatio: unit.heightCm / baseMax,
-    widthDepthRatio: clamp(unit.lengthCm / Math.max(unit.widthCm, 0.1), 0.62, 1.9),
+    lengthCm,
+    widthCm,
+    heightCm,
+    heightToBaseRatio: heightCm / baseMax,
+    widthDepthRatio: lengthCm / Math.max(widthCm, 0.1),
   }
 }
 

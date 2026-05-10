@@ -474,6 +474,10 @@ a {
   width: 100%;
 }
 
+.route-order-site {
+  min-width: 0;
+}
+
 .route-order-summary:focus {
   outline: none;
 }
@@ -1135,16 +1139,80 @@ a {
   }
 
   .route-order-summary {
-    min-width: 900px;
+    column-gap: 14px;
+    grid-template-areas:
+      "number site pedidos chevron"
+      "number site weight chevron"
+      "priority priority time time";
+    grid-template-columns: 34px minmax(0, 1fr) max-content 18px;
+    min-height: 0;
+    padding: 25px 24px 23px;
+    row-gap: 14px;
+  }
+
+  .route-order-number {
+    grid-area: number;
+  }
+
+  .route-order-site {
+    grid-area: site;
+  }
+
+  .route-order-site strong {
+    max-width: none;
+  }
+
+  .route-order-pedidos {
+    grid-area: pedidos;
+    justify-self: end;
+    white-space: nowrap;
+  }
+
+  .route-order-weight {
+    grid-area: weight;
+    justify-self: end;
+    text-align: right;
+    white-space: nowrap;
+  }
+
+  .route-order-priority {
+    grid-area: priority;
+    justify-self: start;
+    text-align: left;
+  }
+
+  .route-order-time {
+    grid-area: time;
+    justify-self: end;
+    text-align: right;
+  }
+
+  .route-order-chevron {
+    grid-area: chevron;
+    justify-self: end;
+  }
+
+  .route-orders-card {
+    max-width: 100%;
+    overflow: hidden;
   }
 
   .route-order-expanded-content {
     box-sizing: border-box;
-    min-width: 900px;
+    padding: 0 24px 24px 72px;
   }
 
-  .route-orders-card {
-    overflow-x: auto;
+  .route-order-expanded-meta {
+    flex-wrap: wrap;
+    gap: 12px 24px;
+    justify-content: flex-start;
+    margin-left: 0;
+    width: 100%;
+  }
+
+  .route-order-products,
+  .route-order-clients {
+    gap: 24px;
   }
 }
 
@@ -1173,6 +1241,84 @@ a {
 
   .route-kpi-grid {
     grid-template-columns: minmax(0, 1fr);
+  }
+
+  .route-section {
+    margin-top: 56px;
+  }
+
+  .route-deliveries-section,
+  .route-truck-section,
+  .route-extras-section {
+    margin-top: 64px;
+  }
+
+  .route-orders-card {
+    border-radius: 18px;
+    margin-top: 30px;
+  }
+
+  .route-order-summary {
+    column-gap: 10px;
+    grid-template-areas:
+      "number site chevron"
+      ". pedidos chevron"
+      ". weight chevron"
+      ". priority chevron"
+      ". time chevron";
+    grid-template-columns: 26px minmax(0, 1fr) 18px;
+    padding: 24px 18px 22px;
+    row-gap: 9px;
+  }
+
+  .route-order-number {
+    font-size: 18px;
+  }
+
+  .route-order-site strong {
+    font-size: 17px;
+  }
+
+  .route-order-site small {
+    overflow-wrap: anywhere;
+  }
+
+  .route-order-pedidos,
+  .route-order-weight,
+  .route-order-priority,
+  .route-order-time {
+    justify-self: start;
+    text-align: left;
+  }
+
+  .route-order-priority small,
+  .route-order-time small {
+    max-width: 100%;
+  }
+
+  .route-order-expanded-content {
+    padding: 0 18px 24px 54px;
+  }
+
+  .route-order-expanded-meta {
+    display: grid;
+    gap: 10px;
+  }
+
+  .route-order-products,
+  .route-order-clients {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .route-order-products li span {
+    display: block;
+    margin-left: 0;
+    margin-top: 6px;
+  }
+
+  .route-order-products li span::before {
+    content: '';
+    margin-right: 0;
   }
 
   .route-map-frame {

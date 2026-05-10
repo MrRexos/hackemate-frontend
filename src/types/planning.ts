@@ -52,6 +52,7 @@ export type PlanningLoadRow = {
   lengthCm?: number
   widthCm?: number
   heightCm?: number
+  orientation?: 'horizontal' | 'vertical' | 'unknown'
   returnable: boolean
   metricSource: string
   dimensionSource?: string
