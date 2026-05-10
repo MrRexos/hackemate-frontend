@@ -7,11 +7,14 @@ import truckTopImage from '../../assets/truck_top.png'
 import vanTopImage from '../../assets/van_top.png'
 
 type TruckLoadPlannerProps = {
+  detailMode?: RoutePalletDetailMode
   plan: TruckLoadPlan
   onSelectClient: (clientId: string) => void
   selectedClientId?: string
   showFloorPlan?: boolean
 }
+
+type RoutePalletDetailMode = 'clients' | 'contents'
 
 type VisualUnit = LoadPiece & {
   visualId: string
@@ -27,6 +30,7 @@ const TOP_DOWN_WIDTH_PADDING = 0.72
 const TOP_DOWN_CANVAS_HEIGHT_PX = 220
 
 export function TruckLoadPlanner({
+  detailMode = 'clients',
   plan,
   onSelectClient,
   selectedClientId,
@@ -63,6 +67,7 @@ export function TruckLoadPlanner({
   if (showFloorPlan) {
     return (
       <RouteTruckLoadPlanner
+        detailMode={detailMode}
         onSelectPallet={handleSelectPallet}
         plan={plan}
         selectedPallet={selectedPallet}
@@ -142,10 +147,12 @@ export function TruckLoadPlanner({
 }
 
 function RouteTruckLoadPlanner({
+  detailMode,
   onSelectPallet,
   plan,
   selectedPallet,
 }: {
+  detailMode: RoutePalletDetailMode
   onSelectPallet: (pallet: TruckPallet) => void
   plan: TruckLoadPlan
   selectedPallet: TruckPallet
@@ -167,7 +174,7 @@ function RouteTruckLoadPlanner({
       />
 
       <div className="route-pallet-detail-grid">
-        <RoutePalletInfoCard pallet={selectedPallet} plan={plan} />
+        <RoutePalletInfoCard detailMode={detailMode} pallet={selectedPallet} plan={plan} />
         <div className="route-pallet-visual-card">
           <PalletThreeScene pallet={selectedPallet} variant="route" />
           <PalletMaterialLegend pallet={selectedPallet} />
@@ -370,12 +377,16 @@ function TruckTopDownScene({
 }
 
 function RoutePalletInfoCard({
+  detailMode,
   pallet,
   plan,
 }: {
+  detailMode: RoutePalletDetailMode
   pallet: TruckPallet
   plan: TruckLoadPlan
 }) {
+  const showContents = detailMode === 'contents'
+
   return (
     <div className="route-pallet-info-card">
       <div className="route-pallet-info-title">
@@ -383,19 +394,45 @@ function RoutePalletInfoCard({
           <h3>
             {pallet.id.replace('P', 'PALET ')} · {pallet.positionLabel}
           </h3>
-          <p>{pallet.clients.length} repartos</p>
+          <p>
+            {showContents
+              ? `${pallet.pieces.length} grupos de carga`
+              : `${pallet.clients.length} repartos`}
+          </p>
         </div>
         <span>{pallet.lane === 'left' ? 'Izq.' : 'Der.'}</span>
       </div>
 
-      <div className="route-pallet-client-list">
-        {pallet.clients.map((client) => (
-          <strong key={client.clientId}>
-            {client.stop}. {client.name}
-          </strong>
-        ))}
-        {pallet.clients.length === 0 ? <strong>Reserva libre</strong> : null}
-      </div>
+      {showContents ? (
+        <div className="route-pallet-content-list">
+          {pallet.pieces.map((piece) => {
+            const rule = materialRuleFor(piece.productType)
+            const products = formatPieceProducts(piece)
+            return (
+              <div className="route-pallet-content-item" key={piece.id}>
+                <i style={{ backgroundColor: piece.color }} />
+                <span>
+                  <strong title={products}>{products}</strong>
+                  <small>
+                    {rule.label} · {formatPieceMaterials(piece)}
+                  </small>
+                </span>
+                <em>{formatPieceQuantity(piece)}</em>
+              </div>
+            )
+          })}
+          {pallet.pieces.length === 0 ? <strong>Reserva libre</strong> : null}
+        </div>
+      ) : (
+        <div className="route-pallet-client-list">
+          {pallet.clients.map((client) => (
+            <strong key={client.clientId}>
+              {client.stop}. {client.name}
+            </strong>
+          ))}
+          {pallet.clients.length === 0 ? <strong>Reserva libre</strong> : null}
+        </div>
+      )}
 
       <div className="route-pallet-metrics">
         <LoadMetric label="Capacidad" value={`${decimalFormatter.format(pallet.utilization)}%`} />
@@ -941,4 +978,19 @@ function formatPallets(value: number) {
     return '<0,1'
   }
   return decimalFormatter.format(value)
+}
+
+function formatPieceProducts(piece: LoadPiece) {
+  const label = piece.products.length > 0
+    ? piece.products.join(' + ')
+    : materialRuleFor(piece.productType).label
+  return label.length > 58 ? `${label.slice(0, 55)}...` : label
+}
+
+function formatPieceMaterials(piece: LoadPiece) {
+  return piece.materialCodes.length > 0 ? piece.materialCodes.join(', ') : 'Sin código'
+}
+
+function formatPieceQuantity(piece: LoadPiece) {
+  return `${decimalFormatter.format(piece.quantity)} ${piece.unit || 'uds'}`
 }

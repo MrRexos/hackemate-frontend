@@ -52,14 +52,6 @@ const dateFormatter = new Intl.DateTimeFormat('es-ES', {
   year: 'numeric',
 })
 
-const typeLabels: Record<string, string> = {
-  barril: 'Barriles',
-  caja: 'Cajas',
-  lata: 'Latas',
-  otros: 'Otros',
-  retornable: 'Retornables',
-}
-
 const statusLabels: Record<string, string> = {
   ok: 'En ventana',
   espera: 'Espera',
@@ -446,6 +438,9 @@ function OrganizationView({
   const allRoutesMapKey = `${plan.date}-${plan.assignedTrucks
     .map((truck) => `${truck.id}:${truck.clients.length}`)
     .join('|')}`
+  const selectedMapTruckId = plan.assignedTrucks.some((truck) => truck.id === selectedRouteId)
+    ? selectedRouteId
+    : ''
 
   return (
     <div className="space-y-[34px]" id="organizacion">
@@ -477,71 +472,28 @@ function OrganizationView({
         <Kpi label="Score" value={formatScore(plan.summary.operationalScore)} tone="accent" />
       </section>
 
-      <section className="grid gap-5 lg:grid-cols-3">
-        {plan.trucks.map((truck) => (
-          <button
-            className={cn(
-              'rounded-[18px] p-5 text-left transition focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#c53030] focus-visible:ring-offset-2 focus-visible:ring-offset-[#fdf4ec]',
-              truck.id === selectedRouteId
-                ? 'bg-[#f6e5d4] ring-2 ring-[#c53030]/20'
-                : 'bg-[#fdf9f6] hover:bg-[#f6e5d4]/65',
-            )}
-            key={truck.id}
-            onClick={() => handleSelectTruck(truck.id)}
-            type="button"
-          >
-            <div className="flex items-start justify-between gap-3">
-              <div>
-                <p className="text-[15px] font-bold text-[#47392b]">{truck.label}</p>
-                <p className="mt-1 text-xs font-bold uppercase tracking-wide text-[#b8aa9c]">{truck.type.label}</p>
-              </div>
-              <span
-                className={cn(
-                  'rounded-[10px] px-2.5 py-1 text-xs font-bold',
-                  truck.clients.length === 0
-                    ? 'bg-[#f2ebe4] text-[#a99583]'
-                    : truck.summary.overflow
-                      ? 'bg-[#f7d9cf] text-[#9b2c2c]'
-                      : 'bg-[#fdf9f6] text-[#806a54]',
-                )}
-              >
-                {truck.clients.length === 0 ? 'Libre' : truck.summary.overflow ? 'Revisar' : 'Asignado'}
-              </span>
-            </div>
-            <div className="mt-5 grid grid-cols-2 gap-4 text-sm">
-              <MiniMetric label="Clientes" value={truck.summary.clients} />
-              <MiniMetric label="Palets" value={`${decimalFormatter.format(truck.summary.pallets)}/${truck.capacityPallets}`} />
-              <MiniMetric label="Fin" value={truck.route.optimized.finish} />
-              <MiniMetric label="Score" value={formatScore(truck.summary.totalScore)} />
-            </div>
-          </button>
-        ))}
+      <section className="route-section distribution-transports-section">
+        <h2 className="route-section-title">Transportes:</h2>
+        <DistributionTransportsList
+          onSelectTruck={handleSelectTruck}
+          selectedTruckId={selectedRouteId}
+          trucks={plan.trucks}
+        />
       </section>
 
       {selectedTruck ? (
-        <section className="grid gap-8 xl:grid-cols-[1.1fr_0.9fr]">
-          <div className="rounded-[18px] bg-[#fdf9f6] p-5">
-            <TruckLoadPlanner
-              onSelectClient={() => undefined}
-              plan={selectedTruck.loadPlan}
-            />
-          </div>
-          <div className="overflow-hidden rounded-[18px] bg-[#fdf9f6]">
-            <div className="bg-[#f6e5d4] px-5 py-4">
-              <h2 className="text-base font-bold text-[#47392b]">Paradas del camión</h2>
-              <p className="mt-1 text-sm font-medium text-[#806a54]">
-                {selectedTruck.summary.clients > 0
-                  ? `${formatKg(selectedTruck.summary.weightKg)} · ${decimalFormatter.format(selectedTruck.summary.pallets)} palets`
-                  : 'Transporte disponible sin asignación'}
-              </p>
-            </div>
-            <TruckStopList truck={selectedTruck} />
-          </div>
+        <section className="route-section route-truck-section distribution-truck-section">
+          <TruckLoadPlanner
+            detailMode="contents"
+            onSelectClient={() => undefined}
+            plan={selectedTruck.loadPlan}
+            showFloorPlan
+          />
         </section>
       ) : null}
 
-      <section className="overflow-hidden rounded-[18px] bg-[#fdf9f6]">
-        <div className="flex flex-wrap items-center justify-between gap-4 bg-[#f6e5d4] px-5 py-4">
+      <section className="space-y-4">
+        <div className="flex flex-wrap items-center justify-between gap-4">
           <div>
             <h2 className="text-base font-bold text-[#47392b]">Mapa global de rutas</h2>
             <p className="mt-1 text-sm font-medium text-[#806a54]">
@@ -553,10 +505,114 @@ function OrganizationView({
           depot={planningDataset.depot}
           onSelectTruck={handleSelectTruck}
           routeKey={allRoutesMapKey}
-          selectedTruckId={selectedRouteId}
+          selectedTruckId={selectedMapTruckId}
           trucks={plan.assignedTrucks}
         />
       </section>
+    </div>
+  )
+}
+
+function DistributionTransportsList({
+  onSelectTruck,
+  selectedTruckId,
+  trucks,
+}: {
+  onSelectTruck: (truckId: string) => void
+  selectedTruckId: string
+  trucks: readonly PlannedTruck[]
+}) {
+  return (
+    <div className="route-orders-card">
+      {trucks.map((truck, index) => {
+        const expanded = truck.id === selectedTruckId
+        const status = transportStatusLabel(truck)
+
+        return (
+          <article
+            className={cn('route-order-row', expanded && 'route-order-row-selected')}
+            key={truck.id}
+          >
+            <button
+              className="route-order-summary"
+              onClick={() => onSelectTruck(truck.id)}
+              type="button"
+            >
+              <span className="route-order-number">{index + 1}.</span>
+              <span className="route-order-site">
+                <strong>{routeTruckLabel(trucks, truck)}</strong>
+                <small>{truck.type.label}</small>
+              </span>
+              <span className="route-order-pedidos">{truck.summary.clients} clientes</span>
+              <span className="route-order-weight">
+                {formatKg(truck.summary.weightKg)}
+                <small>{formatCeilPalletUnit(truck.summary.pallets)}</small>
+              </span>
+              <span className="route-order-priority">
+                <strong>{status.label}</strong>
+                <small>{status.detail}</small>
+              </span>
+              <span className="route-order-time">
+                <strong>{truck.summary.clients > 0 ? truck.route.optimized.finish : '--:--'}</strong>
+                <small>Fin estimado</small>
+              </span>
+              {expanded ? (
+                <ChevronUp aria-hidden="true" className="route-order-chevron" strokeWidth={3.2} />
+              ) : (
+                <ChevronDown aria-hidden="true" className="route-order-chevron" strokeWidth={3.2} />
+              )}
+            </button>
+            {expanded ? <DistributionTransportExpanded truck={truck} /> : null}
+          </article>
+        )
+      })}
+    </div>
+  )
+}
+
+function DistributionTransportExpanded({ truck }: { truck: PlannedTruck }) {
+  const splitIndex = Math.ceil(truck.clients.length / 2)
+  const columns = [truck.clients.slice(0, splitIndex), truck.clients.slice(splitIndex)]
+
+  return (
+    <div className="route-order-expanded-content">
+      <div className="route-order-expanded-meta">
+        <span>
+          CAPACIDAD: <strong>{Math.ceil(truck.summary.pallets)}/{truck.capacityPallets} PALETS</strong>
+        </span>
+        <span>
+          RUTA:{' '}
+          <strong>
+            {truck.clients.length > 0
+              ? `${formatKmRounded(truck.route.optimized.distanceKm)} · ${formatMinutes(truck.route.optimized.totalMinutes)}`
+              : 'SIN CLIENTES'}
+          </strong>
+        </span>
+      </div>
+
+      {truck.clients.length > 0 ? (
+        <div className="route-order-clients">
+          {columns.map((column, index) => (
+            <ul key={index}>
+              {column.map((client) => (
+                <li key={client.clientId}>
+                  <strong>
+                    {client.optimizedSequence}. {client.name}
+                  </strong>
+                  <small>
+                    {client.address} · {client.postalCode} {client.city}
+                  </small>
+                  <span>
+                    {client.arrival} · {formatKg(client.weightKg)} · {formatPalletUnit(client.pallets)}
+                  </span>
+                </li>
+              ))}
+            </ul>
+          ))}
+        </div>
+      ) : (
+        <p className="route-order-empty">Este transporte queda disponible sin clientes asignados.</p>
+      )}
     </div>
   )
 }
@@ -855,38 +911,6 @@ function RouteOrderExpanded({
   )
 }
 
-function TruckStopList({ truck }: { truck: PlannedTruck }) {
-  if (truck.clients.length === 0) {
-    return <div className="p-5 text-sm font-medium text-[#806a54]">Este transporte queda sin asignar.</div>
-  }
-
-  return (
-    <div className="max-h-[520px] overflow-y-auto">
-      {truck.clients.map((client) => (
-        <div className="border-b border-[#f1e5d9] px-5 py-4 last:border-b-0" key={client.clientId}>
-          <div className="flex items-start justify-between gap-3">
-            <div>
-              <p className="text-sm font-bold text-[#47392b]">
-                {client.optimizedSequence}. {client.name}
-              </p>
-              <p className="mt-1 text-xs font-medium leading-5 text-[#a99583]">
-                {client.address}, {client.postalCode} {client.city}
-              </p>
-            </div>
-            <span className="rounded-[10px] bg-[#f6e5d4] px-2.5 py-1 text-xs font-bold text-[#806a54]">
-              {client.arrival}
-            </span>
-          </div>
-          <p className="mt-2 text-xs font-medium text-[#806a54]">
-            {formatKg(client.weightKg)} · {decimalFormatter.format(client.pallets)} palets ·{' '}
-            {client.productTypes.map(productLabel).join(', ')}
-          </p>
-        </div>
-      ))}
-    </div>
-  )
-}
-
 function Kpi({
   label,
   value,
@@ -956,15 +980,6 @@ function RouteComparisonCard({
       </p>
         <strong>{value}</strong>
       </div>
-    </div>
-  )
-}
-
-function MiniMetric({ label, value }: { label: string; value: string | number }) {
-  return (
-    <div>
-      <p className="text-[11px] font-bold uppercase leading-none tracking-wide text-[#b8aa9c]">{label}</p>
-      <p className="mt-2 text-sm font-bold text-[#806a54]">{value}</p>
     </div>
   )
 }
@@ -1065,7 +1080,7 @@ function OrganizationRoutesMap({
     }
 
     const map = L.map(containerRef.current, {
-      attributionControl: true,
+      attributionControl: false,
       scrollWheelZoom: false,
       zoomControl: false,
     }).setView([depot.lat, depot.lng], 10)
@@ -1176,21 +1191,21 @@ function OrganizationRoutesMap({
   ])
 
   return (
-    <div>
-      <div className="relative h-[480px] bg-[#f6e5d4]">
+    <div className="mx-auto max-w-[820px]">
+      <div className="relative h-[480px] overflow-hidden rounded-[18px] bg-[#eef0ee]">
         <div className="h-full w-full" ref={containerRef} />
         <div className="pointer-events-none absolute left-3 top-3 rounded-[13px] bg-[#fdf9f6]/95 px-3 py-2 text-xs font-bold text-[#47392b]">
           {selectedTruckId ? 'Ruta seleccionada' : 'Todas las rutas'}
         </div>
       </div>
-      <div className="grid gap-2 bg-[#f6e5d4] px-5 py-4 sm:grid-cols-2 lg:grid-cols-4">
+      <div className="grid gap-2 pt-3 sm:grid-cols-2 lg:grid-cols-3">
         {trucks.map((truck, index) => (
           <button
             className={cn(
               'flex min-w-0 items-center gap-2 rounded-[13px] px-3 py-2 text-left text-xs transition focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#c53030]',
               truck.id === selectedTruckId
                 ? 'bg-[#c53030] text-white'
-                : 'bg-[#fdf9f6] hover:bg-white',
+                : 'bg-transparent hover:bg-[#f6e5d4]/55',
             )}
             key={truck.id}
             onClick={() => onSelectTruck(truck.id)}
@@ -1467,13 +1482,28 @@ function viewTitle(view: AppView) {
   return 'Rutas'
 }
 
-function productLabel(type: string) {
-  return typeLabels[type] ?? type
-}
-
 function routeTruckLabel(trucks: readonly PlannedTruck[], truck: PlannedTruck) {
   const routeNumber = trucks.findIndex((item) => item.id === truck.id) + 1
   return routeNumber > 0 ? `Camión ${routeNumber}` : truck.label
+}
+
+function transportStatusLabel(truck: PlannedTruck) {
+  if (truck.summary.clients === 0) {
+    return {
+      detail: 'Sin asignación',
+      label: 'Libre',
+    }
+  }
+  if (truck.summary.overflow) {
+    return {
+      detail: 'Capacidad excedida',
+      label: 'Revisar',
+    }
+  }
+  return {
+    detail: `${truck.summary.lines} productos`,
+    label: 'Asignado',
+  }
 }
 
 function trimProductName(product: string) {
@@ -1495,6 +1525,12 @@ function formatOrderCount(value: number) {
 function formatPalletUnit(value: number) {
   const label = Math.abs(value - 1) < 0.05 ? 'palet' : 'palets'
   return `${decimalFormatter.format(value)} ${label}`
+}
+
+function formatCeilPalletUnit(value: number) {
+  const roundedValue = Math.ceil(value)
+  const label = roundedValue === 1 ? 'palet' : 'palets'
+  return `${numberFormatter.format(roundedValue)} ${label}`
 }
 
 function formatKmRounded(value: number) {

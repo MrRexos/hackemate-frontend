@@ -108,7 +108,7 @@ const MATERIAL_RULES: Record<string, MaterialRule> = {
   barril: {
     type: 'barril',
     label: 'Barril',
-    color: '#B66A22',
+    color: '#D7DBE0',
     shape: 'cylinder',
     stackRank: 1,
   },
@@ -129,7 +129,7 @@ const MATERIAL_RULES: Record<string, MaterialRule> = {
   lata: {
     type: 'lata',
     label: 'Lata',
-    color: '#2F6FA3',
+    color: '#33424F',
     shape: 'cylinder',
     stackRank: 4,
   },

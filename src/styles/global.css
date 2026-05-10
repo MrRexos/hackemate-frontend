@@ -522,6 +522,56 @@ a {
   margin-right: 8px;
 }
 
+.route-order-clients {
+  display: grid;
+  gap: 48px;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.route-order-clients ul {
+  display: grid;
+  gap: 14px;
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.route-order-clients li {
+  min-width: 0;
+}
+
+.route-order-clients strong {
+  color: #4a3b30;
+  display: block;
+  font-size: 14px;
+  font-weight: 800;
+  line-height: 1.25;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  text-transform: uppercase;
+  white-space: nowrap;
+}
+
+.route-order-clients small,
+.route-order-clients span,
+.route-order-empty {
+  color: #b1a294;
+  display: block;
+  font-size: 12px;
+  font-weight: 800;
+  line-height: 1.35;
+  margin-top: 5px;
+}
+
+.route-order-clients span {
+  color: #7d6b59;
+}
+
+.route-order-empty {
+  margin: 0;
+  text-transform: uppercase;
+}
+
 .route-order-product-returnable strong {
   color: #66814f;
 }
@@ -672,6 +722,75 @@ a {
   font-weight: 800;
   letter-spacing: 0;
   line-height: 1.25;
+}
+
+.route-pallet-content-list {
+  display: grid;
+  gap: 13px;
+  margin-top: 32px;
+  max-height: 158px;
+  overflow-y: auto;
+  padding-right: 4px;
+}
+
+.route-pallet-content-list > strong {
+  color: #4a3b30;
+  font-size: 18px;
+  font-weight: 800;
+  line-height: 1.25;
+}
+
+.route-pallet-content-item {
+  align-items: start;
+  display: grid;
+  gap: 10px;
+  grid-template-columns: 11px minmax(0, 1fr) auto;
+  min-width: 0;
+}
+
+.route-pallet-content-item i {
+  border-radius: 3px;
+  display: block;
+  height: 11px;
+  margin-top: 3px;
+  width: 11px;
+}
+
+.route-pallet-content-item span {
+  min-width: 0;
+}
+
+.route-pallet-content-item strong {
+  color: #4a3b30;
+  display: block;
+  font-size: 13px;
+  font-weight: 800;
+  line-height: 1.18;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  text-transform: uppercase;
+  white-space: nowrap;
+}
+
+.route-pallet-content-item small {
+  color: #b1a294;
+  display: block;
+  font-size: 11px;
+  font-weight: 800;
+  line-height: 1.25;
+  margin-top: 5px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.route-pallet-content-item em {
+  color: #7d6b59;
+  font-size: 12px;
+  font-style: normal;
+  font-weight: 800;
+  line-height: 1.15;
+  white-space: nowrap;
 }
 
 .route-pallet-metrics {
