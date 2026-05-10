@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 
 import { ConductorRouteMap } from '@/components/truck/ConductorRouteMap'
+import { DistribuidoraCamioPla2D } from '@/components/truck/DistribuidoraCamioPla2D'
 import { RouteStopsTimeline } from '@/components/truck/RouteStopsTimeline'
 import type { LiniaDistribucio } from '@/domain/palletPacking'
 import type { Camio } from '@/models/Camio'
@@ -322,7 +323,7 @@ export function TruckConductorPanel({ camio }: Props) {
               onRouteComplete={onRouteComplete}
               parades={camio.ruta.parades}
               resetSignal={resetSignal}
-              simulationPaused={!simPlaying}
+              simulationPaused={!simPlaying || deliveryModal !== null}
               speedMps={speedMps}
             />
           ) : (
@@ -462,37 +463,74 @@ export function TruckConductorPanel({ camio }: Props) {
           className="fixed inset-0 z-[2000] flex items-center justify-center bg-slate-900/50 p-4 backdrop-blur-[2px]"
           role="dialog"
         >
-          <div className="w-full max-w-md rounded-2xl border border-slate-200 bg-white p-6 shadow-2xl">
+          <div className="max-h-[min(92vh,900px)] w-full max-w-4xl overflow-y-auto rounded-2xl border border-slate-200 bg-white p-5 shadow-2xl sm:p-6">
             <h3 className="text-lg font-semibold text-slate-900">Entrega</h3>
-            <p className="mt-3 text-sm leading-relaxed text-slate-600">
+            <p className="mt-2 text-sm leading-relaxed text-slate-600">
               Has arribat al punt d’entrega:
               <span className="mt-1 block font-semibold text-slate-900">{deliveryModal.nom}</span>
             </p>
-            {liniesModalEntrega.length > 0 ? (
-              <div className="mt-4 rounded-xl border border-slate-200 bg-slate-50 px-3 py-3">
-                <p className="text-xs font-semibold uppercase tracking-wide text-slate-700">Mercaderia a entregar</p>
-                <ul className="mt-2 max-h-52 space-y-2 overflow-y-auto text-sm text-slate-800">
-                  {liniesModalEntrega.map((l) => (
-                    <li className="border-b border-slate-200/80 pb-2 last:border-0 last:pb-0" key={l.producteId}>
-                      {resumLiniaEntregaModal(l)}
-                    </li>
-                  ))}
-                </ul>
-              </div>
-            ) : (
-              <p className="mt-3 text-xs text-slate-500">
-                Sense detall de productes per aquesta parada (comprova la connexió o les taules de la BD).
-              </p>
-            )}
-            <p className="mt-2 text-xs text-slate-500">
-              El camió romandrà aturat fins que confirmis la baixada de mercaderia.
+            <p className="mt-2 text-xs text-amber-900/90">
+              La simulació de la ruta està en pausa fins que finalitzis la comanda.
             </p>
+
+            <div className="mt-5 grid gap-5 lg:grid-cols-[1.15fr_1fr] lg:items-stretch lg:gap-6">
+              <div className="flex min-h-0 flex-col">
+                <p className="mb-2 text-xs font-semibold uppercase tracking-wide text-slate-600">
+                  Disseny del camió (mercat en verd = aquesta parada)
+                </p>
+                <div className="relative min-h-[200px] w-full overflow-hidden rounded-xl border border-slate-200 bg-[#ebe4d9] lg:min-h-[240px]">
+                  {camio.plaCarrega ? (
+                    <div className="h-[min(42vh,260px)] min-h-[200px] w-full lg:h-[280px]">
+                      <DistribuidoraCamioPla2D
+                        compacte
+                        encaixaSenseScroll
+                        paradaEntregaIndex={deliveryModal.index}
+                        paradesCompletades={completedDeliveryIndices}
+                        pla={camio.plaCarrega}
+                        senseLlegenda
+                        teDesbordament={camio.plaCarrega.teDesbordament}
+                        tipusCamio={camio.tipus}
+                      />
+                    </div>
+                  ) : (
+                    <div className="flex h-[200px] items-center justify-center px-4 text-center text-sm text-slate-500">
+                      Sense pla de càrrega disponible encara.
+                    </div>
+                  )}
+                </div>
+              </div>
+
+              <div className="flex min-h-0 flex-col">
+                {liniesModalEntrega.length > 0 ? (
+                  <div className="rounded-xl border border-slate-200 bg-slate-50 px-3 py-3">
+                    <p className="text-xs font-semibold uppercase tracking-wide text-slate-700">
+                      Mercaderia a entregar aquí
+                    </p>
+                    <ul className="mt-2 max-h-[min(40vh,280px)] space-y-2 overflow-y-auto text-sm text-slate-800 lg:max-h-[320px]">
+                      {liniesModalEntrega.map((l) => (
+                        <li className="border-b border-slate-200/80 pb-2 last:border-0 last:pb-0" key={l.producteId}>
+                          {resumLiniaEntregaModal(l)}
+                        </li>
+                      ))}
+                    </ul>
+                  </div>
+                ) : (
+                  <p className="rounded-xl border border-dashed border-slate-200 bg-slate-50 px-3 py-4 text-xs text-slate-500">
+                    Sense detall de productes per aquesta parada (comprova la connexió o les taules de la BD).
+                  </p>
+                )}
+                <p className="mt-3 text-xs text-slate-500">
+                  El camió romandrà aturat fins que confirmis la baixada de mercaderia.
+                </p>
+              </div>
+            </div>
+
             <button
               className="mt-6 h-11 w-full rounded-xl bg-slate-900 text-sm font-semibold text-white transition hover:bg-slate-800"
               onClick={dismissDelivery}
               type="button"
             >
-              Entrega completada · continuar ruta
+              Finalitzar comanda i continuar la ruta
             </button>
           </div>
         </div>
